@@ -21,7 +21,7 @@ Reference:
 #include <fcntl.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
-#define DEBUG 1
+#define DEBUG 0
 
 typedef struct {
     char hostname[512];  // server's hostname
@@ -29,8 +29,24 @@ typedef struct {
     int listen_fd;  // fd to wait for a new connection
 } server;
 
+typedef struct {
+    char username[32];
+    char password[32];
+    int fd;
+} user;
+
 server svr;  // server
+user userList[300];
 int maxfd;
+int userCnt;
+fd_set master;
+fd_set readfds;
+
+int registration ( char *params, int sockfd );
+int userLogin ( char *params, int sockfd );
+int logout ( int sockfd );
+void printUser();       // for debug
+
 
 static void init_server(unsigned short port) {
     struct sockaddr_in servaddr;
@@ -61,6 +77,19 @@ static void init_server(unsigned short port) {
     #endif
 }
 
+void init_user() {
+    FILE *fp = fopen("user.dat", "r");
+    if (fp) {
+        int i = 0;
+        while(fscanf( fp, "%s %s", userList[i].username, userList[i].password) == 2) {
+            userList[i].fd = -1;
+            i++;
+        }
+        userCnt = i;
+        fclose(fp);
+    }
+}
+
 int main(int argc, char *argv[]) {
     // Parse args.
     if (argc != 2) {
@@ -70,7 +99,9 @@ int main(int argc, char *argv[]) {
 
     // Initialize server
     maxfd = getdtablesize();
+    userCnt = 0;
     init_server((unsigned short) atoi(argv[1]));
+    init_user();
     #if DEBUG == 1
     fprintf(stderr, "\nstarting on %.80s, port %d, fd %d, maxconn %d...\n", svr.hostname, svr.port, svr.listen_fd, maxfd);
     #endif
@@ -81,8 +112,7 @@ int main(int argc, char *argv[]) {
     char buf[512];
     int buf_len;
 
-    fd_set master;
-    fd_set readfds;
+    
     FD_ZERO(&master);
     FD_ZERO(&readfds);
     FD_SET(svr.listen_fd, &master);
@@ -107,8 +137,8 @@ int main(int argc, char *argv[]) {
         			}
                     else {
                         FD_SET(conn_fd, &master);
-                        fprintf(stderr, "recv from %s:%d\n", inet_ntoa(cliaddr.sin_addr), (int)cliaddr.sin_port);
                         #if DEBUG == 1
+                        fprintf(stderr, "recv from %s:%d\n", inet_ntoa(cliaddr.sin_addr), (int)cliaddr.sin_port);
                         fprintf(stderr, "getting a new request... fd %d from %s\n", conn_fd, inet_ntoa(cliaddr.sin_addr));
                         #endif
                     }
@@ -121,6 +151,7 @@ int main(int argc, char *argv[]) {
                     if ((nbytes = recv(i, buf, sizeof(buf), 0)) <= 0) {
                         if (nbytes == 0) {  // connection closed by client
                             fprintf(stderr, "selectserver: socket %d hung up\n", i);
+                            logout(i);
                         }
                         else {
                             ERR_EXIT("recv");
@@ -131,16 +162,117 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "Server received %d bytes from client!\n", nbytes);
                         #endif
                         char action;
-                        char params[10][512];
-                        if (send(i, buf, nbytes, 0) == -1) {
-                            ERR_EXIT("send");
+                        char *params;
+                        // int len = strlen(buf);
+                        // Parse hostname
+                        sscanf(buf,"%c", &action);
+                        params = &(buf[2]);
+                        int ret;
+                        switch (action) {
+                            case 'R':
+                                ret = registration(params, i);
+                            break;
+                            case 'L':
+                                ret = userLogin(params, i);
+                            break;
+                            case 'Q':
+                                ret = logout(i);
+                            break;
+                            default:
+                                fprintf(stderr, "do nothing!\n");
                         }
+
                     }
-                    close(i);
-                    FD_CLR(i, &master);
                 }
             }
         }
     }
     return 0;
+}
+
+
+int registration ( char *params, int sockfd ) {
+    printUser();
+    char newUsername[32];
+    char newPassword[32];
+    sscanf(params, "%s %s", newUsername, newPassword);
+    int i, check = 0;
+    char returnMessage[512];
+    memset(&returnMessage, 0, sizeof(returnMessage));
+    for ( i = 0; i < userCnt; i ++) {
+
+        if (strcmp(newUsername, userList[i].username) == 0) {          // registeration duplicate username
+            check = 1;
+        }
+    }
+
+    if (check) {          // registeration duplicate username
+        strcpy(returnMessage, "1");
+    } else {                        // registration success
+        strcpy(userList[userCnt].username, newUsername);
+        strcpy(userList[userCnt].password, newPassword);
+        userList[userCnt].fd = sockfd;
+        userCnt++;
+        FILE *fp = fopen("user.dat", "a");
+        fprintf(fp, "%s %s\n", newUsername, newPassword);
+        fclose(fp);
+        strcpy(returnMessage, "2");
+    }
+    if (send(sockfd, returnMessage, strlen(returnMessage)+1, 0) == -1) {
+        ERR_EXIT("send");
+    }
+    return 0;
+}
+
+int userLogin( char *params, int sockfd ) {
+    # if DEBUG == 1
+    printUser();
+    fprintf(stderr, "in userLogin: %s\n", params);
+    # endif
+    char newUsername[32];
+    char newPassword[32];
+    sscanf(params, "%s %s", newUsername, newPassword);
+    int i, check = 0;
+    char returnMessage[512];
+    memset(&returnMessage, 0, sizeof(returnMessage));
+    for ( i = 0; i < userCnt; i ++) {
+
+        if (strcmp(newUsername, userList[i].username) == 0) {
+            if (strcmp(newPassword, userList[i].password) == 0) {      // login success
+                userList[i].fd = sockfd;
+                strcpy(returnMessage, "3");
+            } else {                                                   // wrong password
+                strcpy(returnMessage, "4");
+            }
+            check = 1;
+        }
+    }
+    if (!check) {
+        strcpy(returnMessage, "4");
+    }
+
+    if (send(sockfd, returnMessage, sizeof(returnMessage), 0) == -1) {
+        ERR_EXIT("send");
+    }
+}
+
+int logout(int sockfd) {
+    int i;
+    for ( i = 0; i < userCnt; i++) {
+        if ( sockfd == userList[i].fd ) {
+            userList[i].fd = -1;       // offline
+        }
+    }
+    FD_CLR(sockfd, &master);
+    close(sockfd);
+    return 0;
+}
+
+void printUser() {
+    int i;
+    fprintf(stderr, "userprint\n");
+    for ( i= 0; i < userCnt; i++) {
+        fprintf(stderr, "%s %s %d\n", userList[i].username, userList[i].password, userList[i].fd);
+    }
+    return;
 }
