@@ -20,6 +20,7 @@ Reference:
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <ctype.h>
 #include <unistd.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
@@ -32,6 +33,7 @@ typedef struct {
 } server;
 
 typedef struct {
+    int id;
     char username[32];
     char password[32];
     int fd;
@@ -87,10 +89,11 @@ static void init_server(unsigned short port) {
 }
 
 void init_user() {
+    printf("init_user\n");
     FILE *fp = fopen("user.dat", "r");
     if (fp) {
         int i = 0;
-        while(fscanf( fp, "%s %s", userList[i].username, userList[i].password) == 2) {
+        while(fscanf( fp, "%d %s %s", &userList[i].id, userList[i].username, userList[i].password) == 3) {
             userList[i].fd = -1;
             i++;
         }
@@ -286,6 +289,39 @@ void fileTransfer(char *filename, int sockfd){
     printf("%d loop,",loopCount);
 }
 
+int sendEntireFile(char *filepath, int sockfd) {
+    FILE *pFile = fopen( filepath, "rb");
+    char *buffer;
+    long lSize;
+    size_t result;
+    // obtain file size:
+    fseek (pFile , 0 , SEEK_END);
+    lSize = ftell (pFile);
+    rewind (pFile);
+
+    // allocate memory to contain the whole file:
+    buffer = (char*) malloc (sizeof(char)*lSize);
+
+    if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
+
+    // copy the file into the buffer:
+    result = fread (buffer,1,lSize,pFile);
+    if (result != lSize) {fputs ("Reading error",stderr); exit (3);}
+    printf("readEntireFile\n%s\n", buffer);
+
+    if (send(sockfd, buffer, result, 0) == -1) {
+        ERR_EXIT("send");
+    } else {
+        fclose(pFile);
+        free (buffer);
+    }
+    /* the whole file is now loaded in the memory buffer. */
+
+    // terminate
+    //free (buffer);
+    return (int)result;
+}
+
 void setReceiver(char *params, int sockfd){
 	char receiver[32];
 	sscanf(params, "%s", receiver);
@@ -294,6 +330,39 @@ void setReceiver(char *params, int sockfd){
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
         	strcpy(userList[i].receiver,receiver);
+            char filepath[20], sender[4];
+            memset(filepath, sizeof(filepath), 0);
+            strcpy(filepath, "./history/");
+            snprintf(sender, sizeof(sender), "%d", i);
+            strcat(filepath, sender);
+            strcat(filepath, "_");
+            strcat(filepath, receiver);
+            #if DEBUG == 1
+            fprintf(stderr, "history filepath:%s\n", filepath);
+            #endif
+
+            int ret = sendEntireFile(filepath, sockfd);     //send history
+            FILE *fp = fopen( filepath, "r+");
+            char senderInHistory[4];
+            char msg[1024];
+            char read[4];
+            int len = 0;
+            while(fscanf(fp, "%s%s%s", sender, msg, read) == 3){
+                len += strlen(sender)+strlen(msg)+2;
+                if (strcmp(read,"0")==0){
+                    fprintf(stderr, "change read!%d\n", len);
+                    int res = fseek(fp, len, SEEK_SET);
+                    strcpy(read,"1");
+                    if(res < 0)
+                    {
+                        ERR_EXIT("fseek");
+                    }
+                    printf("%s\n", read);
+                    fprintf(fp, "%s", read);
+                }
+                len += 2;
+            } 
+            fclose(fp);
         	break;
         }
     }
@@ -401,12 +470,14 @@ int registration ( char *params, int sockfd ) {
     } else {                        // registration success
         strcpy(userList[userCnt].username, newUsername);
         strcpy(userList[userCnt].password, newPassword);
+        userList[userCnt].id = userCnt;
         userList[userCnt].fd = sockfd;
-        userCnt++;
+        
         FILE *fp = fopen("user.dat", "a");
-        fprintf(fp, "%s %s\n", newUsername, newPassword);
+        fprintf(fp, "%d %s %s\n", userCnt, newUsername, newPassword);
         fclose(fp);
         strcpy(returnMessage, "2");
+        userCnt++;
     }
     if (send(sockfd, returnMessage, strlen(returnMessage)+1, 0) == -1) {
         ERR_EXIT("send");

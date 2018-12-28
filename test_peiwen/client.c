@@ -40,7 +40,7 @@ int userLogin (char *username, char *password, int sockfd);
 int fileReceive(char *filename, int sockfd);
 void userReadOrSend(char *username, int sockfd);
 void userChooseTarget(char *userListFile, char *buf);
-int chooseToDo(char *receiver, int sockfd);
+int chooseToDo(char *receiver, int sockfd, char *history);
 void findfile(char* pattern);
 void showUnreadMsg(char* fileName, char* userName);
 
@@ -174,11 +174,33 @@ int main(int argc, char *argv[]) {
 
 
 //send message or file to server with sockfd
-int chooseToDo(char *receiver, int sockfd){
+int chooseToDo(char *receiver, int sockfd, char *history){
     int i=0;
     char c;
     //送訊息之前，如果對方也送訊息給自己，如何即時顯示?
     //fprintf(stdout,"What do you want to do?\n> Send message(S)\n> Send file(F)\n> Close this chat(C)\n");   
+    int sender, read;
+    char msg[1024];
+    char buf[1024];
+    memset(msg, 0, sizeof(msg));
+    printf("%s", history);
+    //char *ptr = history[0];
+    
+    while(sscanf(history, "%[^\n]", buf) > 0){
+        //printf("!!!!!!%d %s\n", (int) strlen(buf), buf);
+        history = &(history[strlen(buf)+1]);
+        sscanf(buf, "%d%s%d", &sender, msg, &read);
+        if(read){
+            printf("  %d:\t%s\n", sender, msg);
+        }
+        else {
+            printf("**%d:\t%s\t**\n", sender, msg);
+        }
+        memset(msg, 0, sizeof(msg));
+        memset(buf, 0, sizeof(buf));
+    }
+    
+    printf("===================================\n");
     while(1) {
         getchar();    
         fprintf(stdout,"What do you want to do?\n> Send message(M)\n> Send file(F)\n> Close this chat(C)\n");
@@ -187,7 +209,7 @@ int chooseToDo(char *receiver, int sockfd){
         int nbytes_send;
         char message[512];
         if ( c == 'M' || c == 'm') {            
-        	char typeMessage[300];
+        	char typeMessage[1024];
             memset(&typeMessage, 0, sizeof(typeMessage));
             int nbytes_send;
             char *line = NULL;
@@ -229,7 +251,7 @@ int chooseToDo(char *receiver, int sockfd){
             //try to read online message
 
             
-            i++;
+            i++;  // why i++?
         } else if ( c == 'C' || c == 'c'){
             message[0] = toupper(c);
             message[1] = '\0';
@@ -247,98 +269,6 @@ int chooseToDo(char *receiver, int sockfd){
     }
 }
 
-int userLogin (char *username, char *password, int sockfd) {
-    // Sign up and login interface
-    char c;
-
-    fprintf(stdout, "Welcome to CNline!\n> Login(L)\n> Sign up(R)\n> Cancel(C)\n");
-    while (1) {
-        fscanf(stdin, "%c", &c);
-        if ( c == 'R' || c == 'r') {
-            fprintf(stdout, "Sign up!\n");
-            fprintf(stdout, "username:");
-            fscanf(stdin, "%s", username);
-            fprintf(stdout, "password:");
-            fscanf(stdin, "%s", password);
-        } else if ( c == 'L' || c == 'l'){
-            fprintf(stdout, "Login!\n");
-            fprintf(stdout, "username:");
-            fscanf(stdin, "%s", username);
-            fprintf(stdout, "password:");
-            fscanf(stdin, "%s", password);
-        } else if ( c == 'C' || c == 'c'){
-            fprintf(stdout, "Bye!\n");
-            return -1;
-        } else {
-            if ( c != '\n' ) {
-                fprintf(stdout, "you type the wrong format!please try again QQ\n");
-            }
-            continue;
-        }
-        // Send user profile to server
-        int nbytes_send;
-        char message[512];
-        message[0] = toupper(c);
-        message[1] = '\0';
-        strcat(message, " ");
-        strcat(message, username);
-        strcat(message, " ");
-        strcat(message, password);
-        
-        #if DEBUG == 1
-        fprintf(stderr, "%s\n", message);
-        #endif
-
-        if ((nbytes_send = send(sockfd, message, sizeof(message), 0)) == -1) {
-            ERR_EXIT("send")
-        }
-        #if DEBUG == 1
-        fprintf(stderr, "Client send %d bytes to server!\n", nbytes_send);
-        #endif
-        FD_SET(sockfd, &master);
-        
-        // Wait recv
-        readfds = master;   // duplicate master fd_set
-        int conn;
-
-        if ((conn = select(maxfd + 1, &readfds, NULL, NULL, &timeout)) == -1) {
-            ERR_EXIT("select")
-        }
-        else if (conn == 0) {       // Timeout or unreachable
-            #if DEBUG == 1
-            fprintf(stderr, "timeout!\n");
-            #endif
-            return -1;
-        }
-        if (FD_ISSET(sockfd, &readfds)) {
-            char receiveMessage[512] = {};
-            int nbytes_recv;
-            if((nbytes_recv = recv(sockfd, receiveMessage, sizeof(receiveMessage), 0))<=0) {
-                fprintf(stderr, "nothing recv\n");
-            }
-            else{
-                #if DEBUG == 1
-                fprintf(stderr,"message: %c\n%d\n", receiveMessage[0], nbytes_recv);
-                #endif
-                int ret = atoi(receiveMessage);
-                if (ret == 1) {
-                    fprintf(stdout, "Registration error: The username is existed, please change another username to sign up!\n> Sign up(R)\n> Login(L)\n> Cancel(C)\n");
-                    continue;
-                } else if (ret == 2) {  // Sign up success
-                    return 1;           
-                } else if (ret == 3) {  // Login success
-                    return 2;           
-                } else {                // Login fail
-                    fprintf(stdout, "Login error: Somewhere wrong with username or password! Please try again!\n> Sign up(R)\n> Login(L)\n> Cancel(C)\n");
-                    continue;
-                }
-                break;
-            }
-            // FD_CLR(sockfd, &master);
-        }
-    }
-    return 0;
-}
 
 int fileReceive(char *filename, int sockfd){
     int fileSize,numbytes;
@@ -404,7 +334,7 @@ void userChooseTarget(char *userListFile, char *buf){
         i++;
     }
     for(int j=0;j<i;j++){
-    	printf( "%d：\t%s\n",j,userList[j]);
+    	printf( "%d：\t%s\n", j, userList[j]);
     }//待解問題：還沒下線前，又有新加進來的user怎麼辦？
     fclose(fptr); 
     printf("------------------------------------\n");
@@ -431,7 +361,7 @@ void userReadOrSend(char *username, int sockfd){//return when log out
             int nbytes_send;
 
             memset(&receiver, 0, sizeof(receiver));
-            userChooseTarget("user.dat",receiver);
+            userChooseTarget("user.dat",receiver);      // Choose user user data need to be send by server
             printf("Your choose to chat with:%s\n",receiver);
             message[0] = toupper(c);
             strcat(message, " ");
@@ -443,11 +373,27 @@ void userReadOrSend(char *username, int sockfd){//return when log out
             #if DEBUG == 1
                 fprintf(stderr, "Send Message %d bytes to server!\n", nbytes_send);
             #endif
-            
-            int todo=chooseToDo(receiver, sockfd);
-            if (todo == 0){//close this window and choose another target
-                continue;
+            char history[1024];
+            memset(&history, 0, sizeof(history));
+            int nbytes_recv;
+            if((nbytes_recv = recv(sockfd, history, sizeof(history), 0))<0) {
+                fprintf(stderr, "recv error\n");
             }
+            else {
+                #if DEBUG == 1
+                    fprintf(stderr, "Recv Message %d bytes from server!\n", nbytes_recv);
+                    fprintf(stderr, "Recv Message %s\n", history);
+                #endif
+                if(nbytes_recv == 0) {
+                    printf("New friend!! Say hi to him or her!!\n");
+                }
+                int todo=chooseToDo(receiver, sockfd, history);
+                if (todo == 0){//close this window and choose another target
+                    continue;
+                }
+            }
+            
+            
         } else if ( c == 'L' || c == 'l'){
             fprintf(stdout, "Logout!\n");
             return;
@@ -555,4 +501,100 @@ void showUnreadMsg(char* fileName, char* userName){
     rename("replace.tmp", fileName);
 
     printf("All messages are read!\n");
+}
+
+
+
+
+int userLogin (char *username, char *password, int sockfd) {
+    // Sign up and login interface
+    char c;
+
+    fprintf(stdout, "Welcome to CNline!\n> Login(L)\n> Sign up(R)\n> Cancel(C)\n");
+    while (1) {
+        fscanf(stdin, "%c", &c);
+        if ( c == 'R' || c == 'r') {
+            fprintf(stdout, "Sign up!\n");
+            fprintf(stdout, "username:");
+            fscanf(stdin, "%s", username);
+            fprintf(stdout, "password:");
+            fscanf(stdin, "%s", password);
+        } else if ( c == 'L' || c == 'l'){
+            fprintf(stdout, "Login!\n");
+            fprintf(stdout, "username:");
+            fscanf(stdin, "%s", username);
+            fprintf(stdout, "password:");
+            fscanf(stdin, "%s", password);
+        } else if ( c == 'C' || c == 'c'){
+            fprintf(stdout, "Bye!\n");
+            return -1;
+        } else {
+            if ( c != '\n' ) {
+                fprintf(stdout, "you type the wrong format!please try again QQ\n");
+            }
+            continue;
+        }
+        // Send user profile to server
+        int nbytes_send;
+        char message[512];
+        message[0] = toupper(c);
+        message[1] = '\0';
+        strcat(message, " ");
+        strcat(message, username);
+        strcat(message, " ");
+        strcat(message, password);
+        
+        #if DEBUG == 1
+        fprintf(stderr, "%s\n", message);
+        #endif
+
+        if ((nbytes_send = send(sockfd, message, sizeof(message), 0)) == -1) {
+            ERR_EXIT("send")
+        }
+        #if DEBUG == 1
+        fprintf(stderr, "Client send %d bytes to server!\n", nbytes_send);
+        #endif
+        FD_SET(sockfd, &master);
+        
+        // Wait recv
+        readfds = master;   // duplicate master fd_set
+        int conn;
+
+        if ((conn = select(maxfd + 1, &readfds, NULL, NULL, &timeout)) == -1) {
+            ERR_EXIT("select")
+        }
+        else if (conn == 0) {       // Timeout or unreachable
+            #if DEBUG == 1
+            fprintf(stderr, "timeout!\n");
+            #endif
+            return -1;
+        }
+        if (FD_ISSET(sockfd, &readfds)) {
+            char receiveMessage[512] = {};
+            int nbytes_recv;
+            if((nbytes_recv = recv(sockfd, receiveMessage, sizeof(receiveMessage), 0))<=0) {
+                fprintf(stderr, "nothing recv\n");
+            }
+            else{
+                #if DEBUG == 1
+                fprintf(stderr,"message: %c\n%d\n", receiveMessage[0], nbytes_recv);
+                #endif
+                int ret = atoi(receiveMessage);
+                if (ret == 1) {
+                    fprintf(stdout, "Registration error: The username is existed, please change another username to sign up!\n> Sign up(R)\n> Login(L)\n> Cancel(C)\n");
+                    continue;
+                } else if (ret == 2) {  // Sign up success
+                    return 1;           
+                } else if (ret == 3) {  // Login success
+                    return 2;           
+                } else {                // Login fail
+                    fprintf(stdout, "Login error: Somewhere wrong with username or password! Please try again!\n> Sign up(R)\n> Login(L)\n> Cancel(C)\n");
+                    continue;
+                }
+                break;
+            }
+            // FD_CLR(sockfd, &master);
+        }
+    }
+    return 0;
 }
