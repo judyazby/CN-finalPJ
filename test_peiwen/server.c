@@ -18,7 +18,9 @@ Reference:
 #include <netdb.h>
 #include <sys/select.h>
 #include <sys/file.h>
-#include <sys/stat.h> 
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
 #define DEBUG 1
@@ -33,6 +35,8 @@ typedef struct {
     char username[32];
     char password[32];
     int fd;
+    /* save the person chatting with now */
+    char receiver[32];
 } user;
 
 server svr;  // server
@@ -47,6 +51,10 @@ int userLogin ( char *params, int sockfd );
 int logout ( int sockfd );
 void printUser();       // for debug
 void fileTransfer(char *filename, int sockfd);
+int messaging(char *params, int sockfd);
+void findfile(char* pattern);
+void setReceiver(char *params, int sockfd);
+void setUsernameByFd(char *userName, int sockfd);
 
 static void init_server(unsigned short port) {
     struct sockaddr_in servaddr;
@@ -161,6 +169,7 @@ int main(int argc, char *argv[]) {
                     else {
                         #if DEBUG == 1
                         fprintf(stderr, "Server received %d bytes from client!\n", nbytes);
+                        fprintf(stdout,"Contents:%s\n", buf);
                         #endif
                         char action;
                         char *params;
@@ -170,14 +179,41 @@ int main(int argc, char *argv[]) {
                         params = &(buf[2]);
                         int ret;
                         switch (action) {
-                            case 'R':
+                            case 'R':{
                                 ret = registration(params, i);
-                            break;
-                            case 'L':{
-                                ret = userLogin(params, i);
+                                /*
                                 if(ret){                                    
                                     fileTransfer("user.dat",i);
                                 }
+                                */
+                            }
+                            break;
+                            case 'L':{
+                                ret = userLogin(params, i);
+                                /*
+                                if(ret){                                    
+                                    fileTransfer("user.dat",i);
+                                }
+                                */
+                            }
+                            break;
+                            case 'S':{
+                            	setReceiver(params, i);                            	
+                            	//如果一直在messaging loop, 就必須想怎麼塞入select
+                            	//否則中間有人登入, server就無法處理
+                            }
+                            break;
+                            case 'C':{//check new message
+                            	/*
+                            	fprintf(stdout,"Your unread messages from:\n");
+                            	char pattern[32];
+                            	setUsernameByFd(pattern, i);
+                            	findfile(pattern);
+                            	*/
+                            }
+                            break;
+                            case 'M':{
+                            	ret = messaging(params, i);/* params hold sender&receiver name*/
                             }
                             break;
                             case 'Q':
@@ -241,13 +277,108 @@ void fileTransfer(char *filename, int sockfd){
                 fcntl(sockfd, F_SETFL, flags);//turn back to blocking mode
             }
             if(ferror(fp)){
-                //printf("Error reading\n");
+                printf("Error reading\n");
             }
             break;
         }
         loopCount++;
     }
     printf("%d loop,",loopCount);
+}
+
+void setReceiver(char *params, int sockfd){
+	char receiver[32];
+	sscanf(params, "%s", receiver);
+
+    //set reciver info of sender in userlist
+    for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+        	strcpy(userList[i].receiver,receiver);
+        	break;
+        }
+    }
+}
+
+void setUsernameByFd(char *userName, int sockfd){	
+	for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+        	strcpy(userName, userList[i].username);
+        	break;
+        }
+    }
+}
+
+int messaging(char *params, int sockfd){
+	int recvSockfd=-1;
+	char receiver[32];
+	char sender[32];
+    char message[512];
+
+    sscanf(params, "%s %[^\n]*c", receiver, message);
+	//sscanf(params, "%s %[^\n]*c", receiver, message);
+
+    //find sender by sockfd
+    for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+        	strcpy(sender, userList[i].username);
+        	break;
+        }
+    }    
+
+
+	//create a C(n,2) dat chat records
+	char fileName[100] = "chat_";
+	//fileName: alphabet order
+	int cmp=strcmp(sender,receiver);
+	//allow self messaging
+	if (cmp>=0){//sender字母比較後面
+		strcat(fileName, receiver);
+		strcat(fileName, "_");
+		strcat(fileName, sender);	        	
+	} else {
+		strcat(fileName, sender);
+		strcat(fileName, "_");
+		strcat(fileName, receiver);	        		
+	}
+	strcat(fileName, ".dat");
+	FILE *fp= fopen(fileName, "a");
+	char msgBuf[512];
+	//append message
+
+	//find receiver sockfd
+	for (int i = 0; i < userCnt; i ++) {
+        if (strcmp(receiver, userList[i].username) == 0) {
+        	recvSockfd=userList[i].fd;
+        	break;
+        }
+    }
+
+    # if DEBUG == 1
+	fprintf(stdout,"targetSockfd=%d\n",recvSockfd);
+	# endif
+	
+	//check if the receiver is online
+	if(recvSockfd>0){
+		//還沒做:client在messaging同時要能recv
+
+		msgBuf[0] = 'R';//stands for read
+	} else {
+		msgBuf[0] = 'U';//stands for unread
+	}
+	
+	strcat(msgBuf, " ");
+	strcat(msgBuf, sender);
+	strcat(msgBuf, " to ");
+	strcat(msgBuf, receiver);
+	strcat(msgBuf, ": ");
+	strcat(msgBuf, message);
+	strcat(msgBuf, "\n\0");
+	int results = fputs(msgBuf, fp);
+	if (results == EOF) {
+	    fprintf(stdout,"Fail to write msg.\n");
+	    // Failed to write do error code here.
+	}
+	fclose(fp);//感覺要BLOCK一下?
 }
 
 int registration ( char *params, int sockfd ) {
@@ -313,7 +444,7 @@ int userLogin( char *params, int sockfd ) {
     if (send(sockfd, returnMessage, sizeof(returnMessage), 0) == -1) {
         ERR_EXIT("send");
     }
-    return 1;
+    return 1;//待改。目前不管有沒有登入成功，都會傳送檔案
 }
 
 int logout(int sockfd) {
@@ -335,4 +466,46 @@ void printUser() {
         fprintf(stderr, "%s %s %d\n", userList[i].username, userList[i].password, userList[i].fd);
     }
     return;
+}
+//http://titania.ctie.monash.edu.au/handling-files/find-file.c
+void findfile(char* pattern)
+{
+    DIR* dir;			/* pointer to the scanned directory. */
+    struct dirent* entry;	/* pointer to one directory entry.   */
+    char cwd[500];	/* current working directory.        */
+    struct stat dir_stat;       /* used by stat().                   */
+
+    /* first, save path of current working directory */
+    if (!getcwd(cwd, 500)) {
+	perror("getcwd:");
+	return;
+    }
+
+
+    /* open the directory for reading */
+    dir = opendir(".");
+    if (!dir) {
+	fprintf(stderr, "Cannot read directory '%s': ", cwd);
+	perror("");
+	return;
+    }
+
+    /* scan the directory, traversing each sub-directory, and */
+    /* matching the pattern for each file name.               */
+    while ((entry = readdir(dir))) {
+	/* check if the pattern matchs. */
+		if (entry->d_name && strstr(entry->d_name, pattern)) {
+	    	printf("%s/%s\n", cwd, entry->d_name);
+		}
+	    /* check if the given entry is a directory. */
+	    if (stat(entry->d_name, &dir_stat) == -1) {
+	    	perror("stat:");
+	    	continue;
+	    }
+		/* skip the "." and ".." entries, to avoid loops. */
+		if (strcmp(entry->d_name, ".") == 0)
+		    continue;
+		if (strcmp(entry->d_name, "..") == 0)
+		    continue;
+    }
 }
