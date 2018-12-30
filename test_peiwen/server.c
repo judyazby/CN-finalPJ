@@ -38,7 +38,7 @@ typedef struct {
     char password[32];
     int fd;
     /* save the person chatting with now */
-    char receiver[32];
+    int receiverId;
 } user;
 
 server svr;  // server
@@ -57,6 +57,7 @@ int messaging(char *params, int sockfd);
 void findfile(char* pattern);
 void setReceiver(char *params, int sockfd);
 void setUsernameByFd(char *userName, int sockfd);
+int sendEntireFile(char *filepath, int sockfd);
 
 static void init_server(unsigned short port) {
     struct sockaddr_in servaddr;
@@ -121,7 +122,7 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in cliaddr;  // used by accept()
     int clilen;
     int conn_fd;  // fd for a new connection with client
-    char buf[512];
+    char buf[1024];
     int buf_len;
 
     
@@ -191,6 +192,15 @@ int main(int argc, char *argv[]) {
                                 */
                             }
                             break;
+                            case 'U':{
+                                ret = sendEntireFile("./user.dat", i);
+                                /*
+                                if(ret){                                    
+                                    fileTransfer("user.dat",i);
+                                }
+                                */
+                            }
+                            break;
                             case 'L':{
                                 ret = userLogin(params, i);
                                 /*
@@ -215,9 +225,9 @@ int main(int argc, char *argv[]) {
                             	*/
                             }
                             break;
-                            case 'M':{
+                            case 'M':
                             	ret = messaging(params, i);/* params hold sender&receiver name*/
-                            }
+                            
                             break;
                             case 'Q':
                                 ret = logout(i);
@@ -290,8 +300,20 @@ void fileTransfer(char *filename, int sockfd){
 }
 
 int sendEntireFile(char *filepath, int sockfd) {
+    fprintf(stderr, "filepath:%s\n", filepath);
     FILE *pFile = fopen( filepath, "rb");
     char *buffer;
+    
+    if(pFile == NULL) {
+        buffer = (char*) malloc (30);
+        strcpy(buffer, "no such file");
+        if (send(sockfd, buffer, 30, 0) == -1) {
+            ERR_EXIT("send");
+        } else {
+            free(buffer);
+        }
+        return -1;
+    }
     long lSize;
     size_t result;
     // obtain file size:
@@ -301,6 +323,7 @@ int sendEntireFile(char *filepath, int sockfd) {
 
     // allocate memory to contain the whole file:
     buffer = (char*) malloc (sizeof(char)*lSize);
+    memset(buffer, 0, sizeof(buffer));
 
     if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
 
@@ -323,46 +346,56 @@ int sendEntireFile(char *filepath, int sockfd) {
 }
 
 void setReceiver(char *params, int sockfd){
-	char receiver[32];
-	sscanf(params, "%s", receiver);
+	char receiverName[32];
 
     //set reciver info of sender in userlist
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
-        	strcpy(userList[i].receiver,receiver);
-            char filepath[20], sender[4];
+            sscanf(params, "%s", receiverName);
+            for (int j = 0; j < userCnt; j ++) {
+                if(strcmp(userList[j].username, receiverName)==0){
+                    userList[i].receiverId = j;
+                }
+            }
+        	//strcpy(userList[i].receiver,receiver);
+            char filepath[20], sender[4], receiver[4];
             memset(filepath, sizeof(filepath), 0);
             strcpy(filepath, "./history/");
             snprintf(sender, sizeof(sender), "%d", i);
             strcat(filepath, sender);
             strcat(filepath, "_");
+            snprintf(receiver, sizeof(receiver), "%d", userList[i].receiverId);
             strcat(filepath, receiver);
             #if DEBUG == 1
             fprintf(stderr, "history filepath:%s\n", filepath);
             #endif
 
             int ret = sendEntireFile(filepath, sockfd);     //send history
-            FILE *fp = fopen( filepath, "r+");
-            char senderInHistory[4];
-            char msg[1024];
-            char read[4];
-            int len = 0;
-            while(fscanf(fp, "%s%s%s", sender, msg, read) == 3){
-                len += strlen(sender)+strlen(msg)+2;
-                if (strcmp(read,"0")==0){
-                    fprintf(stderr, "change read!%d\n", len);
-                    int res = fseek(fp, len, SEEK_SET);
-                    strcpy(read,"1");
-                    if(res < 0)
-                    {
-                        ERR_EXIT("fseek");
+            fprintf(stderr, "ret=%d\n", ret);
+            if(ret != -1) {
+                FILE *fp = fopen( filepath, "r+");
+                char senderInHistory[4];
+                char msg[1024];
+                char read[4];
+                int len = 0;
+                while(fscanf(fp, "%s%s%s", sender, msg, read) == 3){
+                    len += strlen(sender)+strlen(msg)+2;
+                    if (strcmp(read,"0")==0){
+                        fprintf(stderr, "change read!%d\n", len);
+                        int res = fseek(fp, len, SEEK_SET);
+                        strcpy(read,"1");
+                        if(res < 0)
+                        {
+                            ERR_EXIT("fseek");
+                        }
+                        printf("%s\n", read);
+                        fprintf(fp, "%s", read);
                     }
-                    printf("%s\n", read);
-                    fprintf(fp, "%s", read);
-                }
-                len += 2;
-            } 
-            fclose(fp);
+                    len += 2;
+                } 
+                fclose(fp);
+            }
+            
         	break;
         }
     }
@@ -379,22 +412,86 @@ void setUsernameByFd(char *userName, int sockfd){
 
 int messaging(char *params, int sockfd){
 	int recvSockfd=-1;
-	char receiver[32];
-	char sender[32];
-    char message[512];
+    int senderId, receiverId;
+	//char receiver[32];
+	//char sender[32];
+    char message[1024];
+    memset(message, 0, sizeof(message));
+    sscanf(params, "%s", message);
+    #if DEBUG == 1
+    fprintf(stderr, "server receive message %s from socket %d\n", message, sockfd);
+    #endif
+    
+    //FILE *fp = fopen( filepath, "a");
 
-    sscanf(params, "%s %[^\n]*c", receiver, message);
+    /*
+    if (send(sockfd, returnMessage, strlen(returnMessage)+1, 0) == -1) {
+        ERR_EXIT("send");
+    }
+    */
 	//sscanf(params, "%s %[^\n]*c", receiver, message);
 
-    //find sender by sockfd
+    
+    //find senderId and receiver by sockfd
+    
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
-        	strcpy(sender, userList[i].username);
+        	//strcpy(sender, userList[i].username);
+            senderId = i;
+            receiverId = userList[i].receiverId;
         	break;
         }
-    }    
+    }
+    
+    char filepath1[20], filepath2[20], sender[4], receiver[4];
+    memset(filepath1, sizeof(filepath1), 0);
+    memset(filepath2, sizeof(filepath2), 0);
+    strcpy(filepath1, "./history/");
+    strcpy(filepath2, "./history/");
+    snprintf(sender, sizeof(sender), "%d", senderId);
+    snprintf(receiver, sizeof(receiver), "%d", receiverId);
+    strcat(filepath1, sender);
+    strcat(filepath2, receiver);
+    strcat(filepath1, "_");
+    strcat(filepath2, "_");
+    strcat(filepath1, receiver);
+    strcat(filepath2, sender);
+    #if DEBUG == 1
+    fprintf(stderr, "history filepath1:%s\n", filepath1);
+    fprintf(stderr, "history filepath2:%s\n", filepath2);
+    #endif
 
+    //find receiver sockfd
+    
+    for (int i = 0; i < userCnt; i ++) {
+        if (receiverId==userList[i].id) {
+            recvSockfd=userList[i].fd;
+            break;
+        }
+    }
+    
+    #if DEBUG == 1
+    fprintf(stderr, "recvSockfd: %d\n", recvSockfd);
+    #endif
 
+    
+    FILE *fp1 = fopen( filepath1, "a");
+    FILE *fp2 = fopen( filepath2, "a");
+    if (recvSockfd != -1 && userList[receiverId].receiverId == senderId) {            // online
+        fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
+        fprintf(fp2, "%d %s 1\n", senderId, message);       // 1 read(online)
+        if (send(recvSockfd, message, strlen(message)+1, 0) == -1) {
+            ERR_EXIT("send");
+        }
+    }
+    else {                           // offline
+        fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
+        fprintf(fp2, "%d %s 0\n", senderId, message);       // 0 unread(offline)
+    }
+    fclose(fp1);
+    fclose(fp2);
+    
+    /*
 	//create a C(n,2) dat chat records
 	char fileName[100] = "chat_";
 	//fileName: alphabet order
@@ -448,6 +545,7 @@ int messaging(char *params, int sockfd){
 	    // Failed to write do error code here.
 	}
 	fclose(fp);//感覺要BLOCK一下?
+    */
 }
 
 int registration ( char *params, int sockfd ) {
@@ -472,6 +570,7 @@ int registration ( char *params, int sockfd ) {
         strcpy(userList[userCnt].password, newPassword);
         userList[userCnt].id = userCnt;
         userList[userCnt].fd = sockfd;
+        userList[userCnt].receiverId = -1;
         
         FILE *fp = fopen("user.dat", "a");
         fprintf(fp, "%d %s %s\n", userCnt, newUsername, newPassword);
