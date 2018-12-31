@@ -53,7 +53,7 @@ int userLogin ( char *params, int sockfd );
 int logout ( int sockfd );
 void printUser();       // for debug
 void fileTransfer(char *filename, int sockfd);
-int messaging(char *params, int sockfd);
+int messaging(char *message, int sockfd);
 void findfile(char* pattern);
 void setReceiver(char *params, int sockfd);
 void setUsernameByFd(char *userName, int sockfd);
@@ -352,6 +352,10 @@ void setReceiver(char *params, int sockfd){
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
             sscanf(params, "%s", receiverName);
+            if (strcmp(receiverName, "closeWindow")==0){
+                userList[i].receiverId = -1;
+                break;
+            }
             for (int j = 0; j < userCnt; j ++) {
                 if(strcmp(userList[j].username, receiverName)==0){
                     userList[i].receiverId = j;
@@ -410,14 +414,13 @@ void setUsernameByFd(char *userName, int sockfd){
     }
 }
 
-int messaging(char *params, int sockfd){
+int messaging(char *message, int sockfd){
 	int recvSockfd=-1;
     int senderId, receiverId;
 	//char receiver[32];
 	//char sender[32];
-    char message[1024];
-    memset(message, 0, sizeof(message));
-    sscanf(params, "%s", message);
+    //char message[1024];
+    //memset(message, 0, sizeof(message));
     #if DEBUG == 1
     fprintf(stderr, "server receive message %s from socket %d\n", message, sockfd);
     #endif
@@ -622,6 +625,7 @@ int logout(int sockfd) {
     for ( i = 0; i < userCnt; i++) {
         if ( sockfd == userList[i].fd ) {
             userList[i].fd = -1;       // offline
+            userList[i].receiverId = -1;
         }
     }
     FD_CLR(sockfd, &master);

@@ -139,7 +139,7 @@ int main(int argc, char *argv[]) {
             while (login>=0){
                 login = userLogin(username, password, sockfd);
                 if ( login < 0) {           // login fail
-                    fprintf(stdout, "login failed\n");
+                    //fprintf(stdout, "login failed\n");
                     return 1;
                 } else if ( login == 2) {   // login success
                     fprintf(stdout, "login success!! Hello, %s\n", username);
@@ -194,7 +194,7 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
     //printf("%s", history);
     //char *ptr = history[0];
     fprintf(stdout, "============================================================\n");
-    fprintf(stdout,"You are now chatting with %s!\nInstruction:\n> Send message -> Just type message that you want to send and press 'Enter'!\n> Send file(F)\n> Close this chat(C)\n", receiver);
+    fprintf(stdout, "You are now chatting with %s!\nInstruction:\n> Send message -> Just type message that you want to send and press 'Enter'!\n> Send file(F <filepath>)\n> Close this chat(C)\n", receiver);
     fprintf(stdout, "============================================================\n");
     
     user sendUser, recvUser;
@@ -215,10 +215,10 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
             history = &(history[strlen(buf)+1]);
             sscanf(buf, "%d%s%d", &senderId, msg, &read);
             if (senderId == sendUser.id) {
-                printf("  %s:", sendUser.username);
+                printf("< %s >:", sendUser.username);
             }
             else {
-                printf("  %s:", recvUser.username);
+                printf("< %s >:", recvUser.username);
             }
             printf("\t%s\n", msg);
             memset(msg, 0, sizeof(msg));
@@ -226,10 +226,11 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
         }
     }
     
-    
+    fprintf(stdout, "-----------------------------------\n");
+    fprintf(stdout, "(Type your message!)\n");
     FD_SET(STDIN, &master);
     FD_SET(sockfd, &master);
-
+    int cnt = 0;
 
     while(1) {
         
@@ -239,35 +240,32 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
         if ((conn = select(maxfd + 1, &readfds, NULL, NULL, NULL)) == -1) {
             ERR_EXIT("select")
         }
-        /*
-        else if (conn == 0) {       // Timeout or unreachable
-            #if DEBUG == 1
-            fprintf(stderr, "timeout!\n");
-            #endif
-            return -1;
-        }
-        */
         if (FD_ISSET(STDIN, &readfds)) {
-            //fscanf(stdin, "%[^\n]", inputMsg);
-            char msgBuf[1024];
-            char *inputMsg = msgBuf;
-            size_t bufSize = 1024;
-            getline(&inputMsg, &bufSize, stdin);
-            #if DEBUG == 1
-            fprintf(stdout, "inputMsg = %s\n", inputMsg);
-            #endif
-            fprintf(stdout,"  %s:\t%s\n", sender, inputMsg);
+            char inputMsg[1024];
+            memset(inputMsg, 0, sizeof(inputMsg));
+            char c;
+            fscanf(stdin, "%c", &c);
+            fscanf(stdin, "%[^\n]", inputMsg);
+            
+            if(inputMsg[0]=='\n')   continue;
             int nbytes_send;
             char buf[1024];
-            strcpy(buf, "M ");
-            strcat(buf, inputMsg);
+            if (inputMsg[0]=='C') {
+                strcpy(buf, "S closeWindow");
+                fprintf(stdout, "\r============================================================\n");
+                if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
+                    ERR_EXIT("send")
+                }
+                break;
+            }
+            else{
+                strcpy(buf, "M ");
+                strcat(buf, inputMsg);
+            }
             if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
                 ERR_EXIT("send")
             }
-            
-            #if DEBUG == 1
-                fprintf(stderr, "Send Message %d bytes to server!\n", nbytes_send);
-            #endif         
+                  
         }
         if (FD_ISSET(sockfd, &readfds)) {
             int nbytes_recv;
@@ -277,9 +275,8 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
                 fprintf(stderr, "nothing recv\n");
             }
             else{
-                //#if DEBUG == 1
-                fprintf(stdout,"  %s:\t%s\n", receiver, receiveMessage);
-                //#endif
+                // file transfer TODOs
+                fprintf(stdout, "\r< %s >:\t%s\n", receiver, receiveMessage);
             }
         }
     }
@@ -334,33 +331,12 @@ void userChooseTarget(char *userListFile, char *receiver, int sockfd){
 
     //print all users in user.dat now
     printf("------------User List------------\n");
-    /*
-    char *line = NULL;
-    size_t len = 0;
-    ssize_t read; 
-  
-    // Open file 
-    FILE *fptr = fopen(userListFile, "r"); 
-    if (fptr == NULL) 
-    { 
-        printf("Cannot open file \n"); 
-        exit(1); 
-    } 
-    // 需要開一個array儲存現有的user list
-    int i=0;
-    while ((read = getline(&line, &len, fptr)) != -1) {
-        char *data = strtok(line," ");
-        strcpy(userList[i], data);
-        i++;
-    }
-    for(int j=0;j<i;j++){
-    	printf( "%d：\t%s\n", j, userList[j]);
-    }//待解問題：還沒下線前，又有新加進來的user怎麼辦？
-    fclose(fptr); 
-    */
+    
     char buf[30];
     int nbytes_send, nbytes_recv;
     char userData[1024];
+    memset(userData, 0, sizeof(userData));
+
     strcpy(buf, "U");
     if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
         ERR_EXIT("send")
@@ -369,16 +345,13 @@ void userChooseTarget(char *userListFile, char *receiver, int sockfd){
         fprintf(stderr, "recv error\n");
     }
     memset(buf, 0, sizeof(buf));
-    //fprintf(stderr, "%s\n", userData);
     int i=0;
     userCnt = 0;
     char *user = userData;
     while(sscanf(user, "%[^\n]", buf) >= 0){
-        //printf("!!!!!!%d %s\n", (int) strlen(buf), buf);
         user = &(user[strlen(buf)+1]);
         sscanf(buf, "%d%s%*s", &userList[i].id, userList[i].username);
         printf("  %d:\t%s\n", userList[i].id, userList[i].username);
-        //memset(msg, 0, sizeof(msg));
         memset(buf, 0, sizeof(buf));
         i++;
     }
@@ -388,6 +361,7 @@ void userChooseTarget(char *userListFile, char *receiver, int sockfd){
     int target;
     fscanf(stdin,"%d", &target);
     strcpy(receiver, userList[target].username);
+    fprintf(stderr, "!!!!=%s\n", receiver);
 }
 
 void userReadOrSend(char *username, int sockfd){//return when log out
@@ -405,8 +379,9 @@ void userReadOrSend(char *username, int sockfd){//return when log out
             char message[512];
             char receiver[32];
             int nbytes_send;
-
-            memset(&receiver, 0, sizeof(receiver));
+            memset(receiver, 0, sizeof(receiver));
+            memset(message, 0, sizeof(message));
+            fprintf(stderr, "receiver=%s\n", receiver);
             userChooseTarget("user.dat", receiver, sockfd);      // Choose user user data need to be send by server
             printf("Your choose to chat with:%s\n",receiver);
             message[0] = toupper(c);
@@ -438,8 +413,6 @@ void userReadOrSend(char *username, int sockfd){//return when log out
                     continue;
                 }
             }
-            
-            
         } else if ( c == 'L' || c == 'l'){
             fprintf(stdout, "Logout!\n");
             return;
