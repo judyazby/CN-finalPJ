@@ -23,11 +23,13 @@ Reference:
 #include <errno.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <libgen.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
-// #define THREAD_NUM 4
 #define STDIN 0
+#define PKT_BUFSIZE 1024
 #define DEBUG 1
+
 
 typedef struct {
     int id;
@@ -35,11 +37,11 @@ typedef struct {
 } user;
 
 
-
 user userList[300];
 int userCnt;
 struct timeval timeout;
 int maxfd;
+int sockfd;
 int time_argv_sec = 1, time_argv_usec = 0;
 fd_set master;
 fd_set readfds;
@@ -51,6 +53,8 @@ void userChooseTarget(char *userListFile, char *receiver, int sockfd);
 int chooseToDo(char *sender, char *receiver, int sockfd, char *history);
 void findfile(char* pattern);
 void showUnreadMsg(char* fileName, char* userName);
+void *sendEntireFile(void *args);
+void recvEntireFile(char *params);
 
 int main(int argc, char *argv[]) {
     int i, j;
@@ -92,7 +96,7 @@ int main(int argc, char *argv[]) {
     #endif
 
     // Build Socket
-    int sockfd;
+    
     if((sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol))==-1) {
         ERR_EXIT("socket")
     }
@@ -186,13 +190,10 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
     int i=0;
     char c;
     //送訊息之前，如果對方也送訊息給自己，如何即時顯示?
-    //fprintf(stdout,"What do you want to do?\n> Send message(S)\n> Send file(F)\n> Close this chat(C)\n");   
     int senderId, read;
     char msg[1024];
     char buf[1024];
     memset(msg, 0, sizeof(msg));
-    //printf("%s", history);
-    //char *ptr = history[0];
     fprintf(stdout, "============================================================\n");
     fprintf(stdout, "You are now chatting with %s!\nInstruction:\n> Send message -> Just type message that you want to send and press 'Enter'!\n> Send file(F <filepath>)\n> Close this chat(C)\n", receiver);
     fprintf(stdout, "============================================================\n");
@@ -211,7 +212,6 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
 
     if(strcmp(history, "no such file")!=0){
         while(sscanf(history, "%[^\n]", buf) >= 0){
-            //printf("!!!!!!%d %s\n", (int) strlen(buf), buf);
             history = &(history[strlen(buf)+1]);
             sscanf(buf, "%d%s%d", &senderId, msg, &read);
             if (senderId == sendUser.id) {
@@ -248,9 +248,10 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
             fscanf(stdin, "%[^\n]", inputMsg);
             
             if(inputMsg[0]=='\n')   continue;
-            int nbytes_send;
             char buf[1024];
+            memset(buf, 0, sizeof(buf));
             if (inputMsg[0]=='C') {
+                int nbytes_send;
                 strcpy(buf, "S closeWindow");
                 fprintf(stdout, "\r============================================================\n");
                 if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
@@ -258,12 +259,53 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
                 }
                 break;
             }
+            else if(inputMsg[0]=='F'){      // file transfer
+                // send and recv to see if receiver is online
+                // if receiver is online, choose filepath and use multithread to send to server
+                int fileCnt = 0;
+                char filepath[3][32];   // at most 5 file samultaniously
+                fprintf(stdout, "Please enter the filepath:\n(You can at most choose more than one files to transfer at the same time, and seperate each filepath with a space.)\n");
+                fscanf(stdin, "%c", &c);
+                fscanf(stdin, "%[^\n]", buf);
+                char *filepathPtr = buf;
+                char filepathBuf[32] = {0};
+                while(sscanf(filepathPtr, "%s", filepathBuf) == 1) {
+                    filepathPtr = &(filepathPtr[strlen(filepathBuf)+1]);
+                    if( access( filepathBuf, F_OK ) != -1 ) {       // check if the file exist
+                        // file exists
+                        #if DEBUG == 1
+                        fprintf(stdout, "filepath = \"%s\" exist!\n", filepathBuf);
+                        #endif
+                        strcpy(filepath[fileCnt], filepathBuf);
+                        fileCnt ++;
+                    } else {
+                        // file doesn't exist
+                        fprintf(stdout, "filepath = \"%s\" does not exist!\n", filepathBuf);
+                    }
+                }
+                fprintf(stderr, "fileCnt = %d\n", fileCnt);
+                // int tnum;
+                pthread_t thread[fileCnt];
+                int tcnt;
+                for ( tcnt = 0; tcnt < fileCnt; tcnt ++) {
+                    if(pthread_create(&thread[tcnt], NULL, (void*)sendEntireFile, filepath[tcnt])!=0){
+                        fprintf(stderr, "error: cannot create thread #%d\n", tcnt);
+                        break;
+                    }
+                }
+                for (tcnt = 0; tcnt < fileCnt; tcnt ++) {
+                    if(pthread_join(thread[tcnt], NULL)!=0){
+                        fprintf(stderr, "error: cannot join thread #%d\n", tcnt);
+                    }
+                }
+            }
             else{
+                int nbytes_send;
                 strcpy(buf, "M ");
                 strcat(buf, inputMsg);
-            }
-            if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
-                ERR_EXIT("send")
+                if ((nbytes_send = send(sockfd, buf, sizeof(buf), 0)) == -1) {
+                    ERR_EXIT("send")
+                }
             }
                   
         }
@@ -271,25 +313,112 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
             int nbytes_recv;
             char receiveMessage[1024];
             memset(receiveMessage, 0, sizeof(receiveMessage));
+            fprintf(stderr, "in reading client sockfd!\n");
             if((nbytes_recv = recv(sockfd, receiveMessage, sizeof(receiveMessage), 0))<=0) {
                 fprintf(stderr, "nothing recv\n");
             }
             else{
                 // file transfer TODOs
-                fprintf(stdout, "\r< %s >:\t%s\n", receiver, receiveMessage);
+                // if the recv msg header is F
+                // keep the message and packed into file
+                fprintf(stderr, "receiveMessage = %s %d\n", receiveMessage, nbytes_recv);
+
+                if ( receiveMessage[0] == 'M' ) {
+                    char *message = &(receiveMessage[2]);
+                    fprintf(stdout, "\r< %s >:\t%s\n", receiver, message);
+                }
+                else if ( receiveMessage[0] == 'F' ) {
+                    if (receiveMessage[2] == '0') {     // receiver is off line
+                        char *errMsg = &(receiveMessage[4]);
+                        fprintf(stdout, "\r< server >:\t%s\n", errMsg);
+                    }
+                    else {
+                        char *message = &(receiveMessage[4]);
+                        fprintf(stderr, "message:\n%s\n", message);
+                        recvEntireFile(message);
+                    }
+                }
             }
         }
-    }
+    }  
+}
 
-
-
+void *sendEntireFile(void *args){
+    fprintf(stderr, "in thread function!\n");
+    char *filepath = (char *)args;
+    fprintf(stderr, "filepath:%s\n", filepath);
+    FILE *pFile = fopen( filepath, "rb");
+    char *buffer;
     
+    if(pFile == NULL) {
+        fprintf(stderr, "no such file!\n");
+    }
+    int lSize;
+    size_t result;
+    // obtain file size:
+    fseek (pFile , 0 , SEEK_END);
+    lSize = ftell (pFile);
+    rewind (pFile);
+
+    // allocate memory to contain the whole file:
+    char *filename;
+    char fileSize[10];
+    filename = basename(filepath);
+    fprintf(stdout, "filename = %s %d\n", filename, lSize);
+    
+    buffer = (char*) malloc (sizeof(char)*lSize + PKT_BUFSIZE);
+    memset(buffer, 0, sizeof(char)*lSize + PKT_BUFSIZE);
+    strcat(buffer, "F ");
+    strcat(buffer, filename);
+    strcat(buffer, " ");
+    snprintf(fileSize, sizeof(fileSize), "%d", lSize);
+    strcat(buffer, fileSize);
+    strcat(buffer, "\n");
+    int l = strlen(buffer);
+    if (buffer == NULL) {fputs ("Memory error",stderr); exit (2);}
+    char *fileContent = &(buffer[l]);
+    
+    // copy the file into the buffer:
+    result = fread (fileContent,1,lSize,pFile);
+    if (result != lSize) {fputs ("Reading error",stderr); exit (3);}
+    fprintf(stderr, "readEntireFile\n%s\n", buffer);
+    /* the whole file is now loaded in the memory buffer. */
+    l = lSize + l;
+    //fprintf(stderr, "l = %d\n", l);
+    if (send(sockfd, buffer, l, 0) == -1) {
+        ERR_EXIT("send");
+    } else {
+        fclose(pFile);
+        free (buffer);
+    }
+    
+    return NULL;
+}
+
+void recvEntireFile(char *params) {
+    int lSize;
+    char filename[32];
+    char *content;
+    char buf[PKT_BUFSIZE];
+    memset(buf, 0, sizeof(buf));
+    sscanf(params, "%[^\n]", buf);
+    sscanf(buf, "%s%d", filename, &lSize);
+    fprintf(stderr, "%s %d\n", filename, lSize);
+    int l = strlen(buf);
+    content = &(params[l+1]);
+
+    FILE *pFile = fopen( filename, "wb" );
+    size_t result;
+    result = fwrite ( content , 1, lSize, pFile);
+    fprintf(stderr, "write to file = %d\n", (int)result);
+    fclose(pFile);
+    return;
 }
 
 
 int fileReceive(char *filename, int sockfd){
-    int fileSize,numbytes;
-    char buf[1024];
+    int fileSize, numbytes;
+    char buf[PKT_BUFSIZE];
     //receive filesize as the halt condition of non-blocking recv 
     FILE *fp;
     if((recv(sockfd, &fileSize, sizeof(int), 0))<=0) {

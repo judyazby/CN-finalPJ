@@ -24,6 +24,7 @@ Reference:
 #include <unistd.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
+#define PKT_BUFSIZE 1024
 #define DEBUG 1
 
 typedef struct {
@@ -41,6 +42,12 @@ typedef struct {
     int receiverId;
 } user;
 
+typedef struct {
+    char filename[32];
+    int fileSize;
+    char *content;
+} file;
+
 server svr;  // server
 user userList[300];
 int maxfd;
@@ -52,7 +59,7 @@ int registration ( char *params, int sockfd );
 int userLogin ( char *params, int sockfd );
 int logout ( int sockfd );
 void printUser();       // for debug
-void fileTransfer(char *filename, int sockfd);
+void fileTransfer(char *params, int sockfd);
 int messaging(char *message, int sockfd);
 void findfile(char* pattern);
 void setReceiver(char *params, int sockfd);
@@ -122,7 +129,7 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in cliaddr;  // used by accept()
     int clilen;
     int conn_fd;  // fd for a new connection with client
-    char buf[1024];
+    char buf[PKT_BUFSIZE];
     int buf_len;
 
     
@@ -216,6 +223,10 @@ int main(int argc, char *argv[]) {
                             	//否則中間有人登入, server就無法處理
                             }
                             break;
+                            case 'F':{
+                                fileTransfer(params, i);                               
+                            }
+                            break;
                             case 'C':{//check new message
                             	/*
                             	fprintf(stdout,"Your unread messages from:\n");
@@ -244,11 +255,59 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void fileTransfer(char *filename, int sockfd){
-    struct stat filestat;
-    int numbytes;
-    char buf[1024];
+void fileTransfer(char *params, int sockfd){
+    //fprintf(stderr, "in fileTransfer!\n");
+    file f;
+    int senderId, receiverId;
+    char buf[PKT_BUFSIZE];
+    sscanf(params, "%[^\n]", buf);
+    sscanf(buf, "%s%d", f.filename, &f.fileSize);
+    int l = strlen(buf);
+    f.content = &(params[l+1]);
+    #if DEBUG == 1
+    fprintf(stderr, "filename = %s fileSize = %d\n content = \n%s\n", f.filename, f.fileSize, f.content);
+    #endif
 
+    for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+            senderId = i;
+            receiverId = userList[i].receiverId;
+            break;
+        }
+    }
+    int receiverSockfd = userList[receiverId].fd;
+    fprintf(stderr, "senderId = %d receiverId = %d\n", senderId, receiverId);
+    char *sendMsg;
+    if (userList[receiverId].fd == -1 && userList[receiverId].receiverId == senderId) {
+        // receiver is offline
+        sendMsg = (char*) malloc(PKT_BUFSIZE);
+        memset(sendMsg, 0, sizeof(sendMsg));
+        sprintf(sendMsg, "F 0 %s is offline or chatting with other while transfering \"%s\"", userList[receiverId].username, f.filename);
+        fprintf(stderr, "sendMsg = %s", sendMsg);
+        if (send(sockfd, sendMsg, strlen(sendMsg), 0) == -1) {
+            ERR_EXIT("send");
+        }
+        free(sendMsg);
+        return;
+    }
+    else {
+        // receiver is online >> do file transfer
+        int nbyte_send;
+        int l = f.fileSize + 30;
+        sendMsg = (char*) malloc(l);
+        memset(sendMsg, 0, l);
+        sprintf(sendMsg, "F 1 %s\n", buf);
+        strcat(sendMsg, f.content);
+        fprintf(stderr, "sendMsg = %s\n", sendMsg);
+        fprintf(stderr, "receiverSockfd = %d\n", receiverSockfd);
+        if ((nbyte_send = send(receiverSockfd, sendMsg, l, 0)) == -1) {
+            ERR_EXIT("send");
+        }
+        free(sendMsg);
+        fprintf(stderr, "nbyte_send = %d size = %d\n", nbyte_send, l);
+    }
+    
+    /*
     int flags = fcntl(sockfd, F_GETFL, 0);
     
 
@@ -282,7 +341,7 @@ void fileTransfer(char *filename, int sockfd){
             //numbytes = write(sockfd, buf, numbytes);
             printf("Sending %d bytes\n",numbytes);
         }
-        if (numbytes<1024){
+        if (numbytes<PKT_BUFSIZE){
             if(feof(fp)){
                 fclose(fp);
                 printf("End of file\n");
@@ -297,6 +356,8 @@ void fileTransfer(char *filename, int sockfd){
         loopCount++;
     }
     printf("%d loop,",loopCount);
+    */
+    return;
 }
 
 int sendEntireFile(char *filepath, int sockfd) {
@@ -305,9 +366,9 @@ int sendEntireFile(char *filepath, int sockfd) {
     char *buffer;
     
     if(pFile == NULL) {
-        buffer = (char*) malloc (30);
+        buffer = (char*) malloc (PKT_BUFSIZE);
         strcpy(buffer, "no such file");
-        if (send(sockfd, buffer, 30, 0) == -1) {
+        if (send(sockfd, buffer, PKT_BUFSIZE, 0) == -1) {
             ERR_EXIT("send");
         } else {
             free(buffer);
@@ -363,7 +424,7 @@ void setReceiver(char *params, int sockfd){
             }
         	//strcpy(userList[i].receiver,receiver);
             char filepath[20], sender[4], receiver[4];
-            memset(filepath, sizeof(filepath), 0);
+            memset(filepath, 0, sizeof(filepath));
             strcpy(filepath, "./history/");
             snprintf(sender, sizeof(sender), "%d", i);
             strcat(filepath, sender);
@@ -379,7 +440,7 @@ void setReceiver(char *params, int sockfd){
             if(ret != -1) {
                 FILE *fp = fopen( filepath, "r+");
                 char senderInHistory[4];
-                char msg[1024];
+                char msg[PKT_BUFSIZE];
                 char read[4];
                 int len = 0;
                 while(fscanf(fp, "%s%s%s", sender, msg, read) == 3){
@@ -403,6 +464,7 @@ void setReceiver(char *params, int sockfd){
         	break;
         }
     }
+    return;
 }
 
 void setUsernameByFd(char *userName, int sockfd){	
@@ -417,25 +479,11 @@ void setUsernameByFd(char *userName, int sockfd){
 int messaging(char *message, int sockfd){
 	int recvSockfd=-1;
     int senderId, receiverId;
-	//char receiver[32];
-	//char sender[32];
-    //char message[1024];
-    //memset(message, 0, sizeof(message));
+	
     #if DEBUG == 1
     fprintf(stderr, "server receive message %s from socket %d\n", message, sockfd);
     #endif
     
-    //FILE *fp = fopen( filepath, "a");
-
-    /*
-    if (send(sockfd, returnMessage, strlen(returnMessage)+1, 0) == -1) {
-        ERR_EXIT("send");
-    }
-    */
-	//sscanf(params, "%s %[^\n]*c", receiver, message);
-
-    
-    //find senderId and receiver by sockfd
     
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
@@ -447,8 +495,8 @@ int messaging(char *message, int sockfd){
     }
     
     char filepath1[20], filepath2[20], sender[4], receiver[4];
-    memset(filepath1, sizeof(filepath1), 0);
-    memset(filepath2, sizeof(filepath2), 0);
+    memset(filepath1, 0, sizeof(filepath1));
+    memset(filepath2, 0, sizeof(filepath2));
     strcpy(filepath1, "./history/");
     strcpy(filepath2, "./history/");
     snprintf(sender, sizeof(sender), "%d", senderId);
@@ -480,75 +528,23 @@ int messaging(char *message, int sockfd){
     
     FILE *fp1 = fopen( filepath1, "a");
     FILE *fp2 = fopen( filepath2, "a");
+    fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
+    
     if (recvSockfd != -1 && userList[receiverId].receiverId == senderId) {            // online
-        fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
         fprintf(fp2, "%d %s 1\n", senderId, message);       // 1 read(online)
-        if (send(recvSockfd, message, strlen(message)+1, 0) == -1) {
+        char sendMsg[PKT_BUFSIZE];
+        memset(sendMsg, 0, sizeof(sendMsg));
+        strcpy(sendMsg, "M ");
+        strcat(sendMsg, message);
+        if (send(recvSockfd, sendMsg, sizeof(sendMsg)+1, 0) == -1) {
             ERR_EXIT("send");
         }
     }
     else {                           // offline
-        fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
         fprintf(fp2, "%d %s 0\n", senderId, message);       // 0 unread(offline)
     }
     fclose(fp1);
     fclose(fp2);
-    
-    /*
-	//create a C(n,2) dat chat records
-	char fileName[100] = "chat_";
-	//fileName: alphabet order
-	int cmp=strcmp(sender,receiver);
-	//allow self messaging
-	if (cmp>=0){//sender字母比較後面
-		strcat(fileName, receiver);
-		strcat(fileName, "_");
-		strcat(fileName, sender);	        	
-	} else {
-		strcat(fileName, sender);
-		strcat(fileName, "_");
-		strcat(fileName, receiver);	        		
-	}
-	strcat(fileName, ".dat");
-	FILE *fp= fopen(fileName, "a");
-	char msgBuf[512];
-	//append message
-
-	//find receiver sockfd
-	for (int i = 0; i < userCnt; i ++) {
-        if (strcmp(receiver, userList[i].username) == 0) {
-        	recvSockfd=userList[i].fd;
-        	break;
-        }
-    }
-
-    # if DEBUG == 1
-	fprintf(stdout,"targetSockfd=%d\n",recvSockfd);
-	# endif
-	
-	//check if the receiver is online
-	if(recvSockfd>0){
-		//還沒做:client在messaging同時要能recv
-
-		msgBuf[0] = 'R';//stands for read
-	} else {
-		msgBuf[0] = 'U';//stands for unread
-	}
-	
-	strcat(msgBuf, " ");
-	strcat(msgBuf, sender);
-	strcat(msgBuf, " to ");
-	strcat(msgBuf, receiver);
-	strcat(msgBuf, ": ");
-	strcat(msgBuf, message);
-	strcat(msgBuf, "\n\0");
-	int results = fputs(msgBuf, fp);
-	if (results == EOF) {
-	    fprintf(stdout,"Fail to write msg.\n");
-	    // Failed to write do error code here.
-	}
-	fclose(fp);//感覺要BLOCK一下?
-    */
 }
 
 int registration ( char *params, int sockfd ) {
