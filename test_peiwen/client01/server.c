@@ -2,7 +2,7 @@
 Computer Networks Final Project
 CNline server v0
 Create Date: 2018.12.22
-Update Date: 2019.01.05
+Update Date: 2018.12.22
 Reference: 
 
 */
@@ -24,7 +24,7 @@ Reference:
 #include <unistd.h>
 
 #define ERR_EXIT(a) { perror(a); exit(1); }
-#define PKT_BUFSIZE 65536
+#define PKT_BUFSIZE 1024
 #define DEBUG 1
 
 typedef struct {
@@ -58,12 +58,13 @@ fd_set readfds;
 int registration ( char *params, int sockfd );
 int userLogin ( char *params, int sockfd );
 int logout ( int sockfd );
+void printUser();       // for debug
 void fileTransfer(char *params, int sockfd);
 int messaging(char *message, int sockfd);
+void findfile(char* pattern);
 void setReceiver(char *params, int sockfd);
 void setUsernameByFd(char *userName, int sockfd);
 int sendEntireFile(char *filepath, int sockfd);
-void printUser();       // for debug
 
 static void init_server(unsigned short port) {
     struct sockaddr_in servaddr;
@@ -165,15 +166,13 @@ int main(int argc, char *argv[]) {
                 }
                 else {  // recv client
                     int nbytes;
-#if DEBUG == 1
+                    #if DEBUG == 1
                     fprintf(stderr, "i=%d\n", i);
-#endif
+                    #endif
                     if ((nbytes = recv(i, buf, sizeof(buf), 0)) <= 0) {
                         if (nbytes == 0) {  // connection closed by client
                             fprintf(stderr, "selectserver: socket %d hung up\n", i);
                             logout(i);
-                            FD_CLR(i, &master);
-                            close(i);
                         }
                         else {
                             ERR_EXIT("recv");
@@ -192,27 +191,44 @@ int main(int argc, char *argv[]) {
                         params = &(buf[2]);
                         int ret;
                         switch (action) {
-                            case 'R':{      // registration
+                            case 'R':{
                                 ret = registration(params, i);
+                                /*
+                                if(ret){                                    
+                                    fileTransfer("user.dat",i);
+                                }
+                                */
                             }
                             break;
-                            case 'U':{      // get user data
+                            case 'U':{
                                 ret = sendEntireFile("./user.dat", i);
+                                /*
+                                if(ret){                                    
+                                    fileTransfer("user.dat",i);
+                                }
+                                */
                             }
                             break;
-                            case 'L':{      // user login
+                            case 'L':{
                                 ret = userLogin(params, i);
+                                /*
+                                if(ret){                                    
+                                    fileTransfer("user.dat",i);
+                                }
+                                */
                             }
                             break;
-                            case 'S':{      // set receiver
+                            case 'S':{
                             	setReceiver(params, i);                            	
+                            	//如果一直在messaging loop, 就必須想怎麼塞入select
+                            	//否則中間有人登入, server就無法處理
                             }
                             break;
-                            case 'F':{      // file transfer
+                            case 'F':{
                                 fileTransfer(params, i);                               
                             }
                             break;
-                            case 'C':{      //check new message
+                            case 'C':{//check new message
                             	/*
                             	fprintf(stdout,"Your unread messages from:\n");
                             	char pattern[32];
@@ -221,13 +237,12 @@ int main(int argc, char *argv[]) {
                             	*/
                             }
                             break;
-                            case 'M':{      // messaging
-                            	ret = messaging(params, i);
-                            }
+                            case 'M':
+                            	ret = messaging(params, i);/* params hold sender&receiver name*/
+                            
                             break;
-                            case 'Q':{      // user logout
+                            case 'Q':
                                 ret = logout(i);
-                            }
                             break;
                             default:
                                 fprintf(stderr, "do nothing!\n");
@@ -242,10 +257,7 @@ int main(int argc, char *argv[]) {
 }
 
 void fileTransfer(char *params, int sockfd){
-#if DEBUG == 1
-    fprintf(stderr, "in fileTransfer\n");
-#endif
-    // init file info
+    //fprintf(stderr, "in fileTransfer!\n");
     file f;
     int senderId, receiverId;
     char buf[PKT_BUFSIZE];
@@ -253,11 +265,10 @@ void fileTransfer(char *params, int sockfd){
     sscanf(buf, "%s%d", f.filename, &f.fileSize);
     int l = strlen(buf);
     f.content = &(params[l+1]);
-
-#if DEBUG == 1
+    #if DEBUG == 1
     fprintf(stderr, "filename = %s fileSize = %d\n content = \n%s\n", f.filename, f.fileSize, f.content);
-#endif
-    // set up sender and receiverId by sockfd
+    #endif
+
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
             senderId = i;
@@ -266,17 +277,12 @@ void fileTransfer(char *params, int sockfd){
         }
     }
     int receiverSockfd = userList[receiverId].fd;
-
-#if DEBUG == 1
     fprintf(stderr, "senderId = %d receiverId = %d userList[receiverId].receiverId = %d\n", senderId, receiverId, userList[receiverId].receiverId);
-#endif
-
-    // send file to receiver
     char *sendMsg;
-    sendMsg = (char*) malloc(PKT_BUFSIZE);
-    memset(sendMsg, 0, PKT_BUFSIZE);
     if ( userList[receiverId].receiverId != senderId) {
         // receiver is offline
+        sendMsg = (char*) malloc(PKT_BUFSIZE);
+        memset(sendMsg, 0, sizeof(sendMsg));
         sprintf(sendMsg, "F 0 %s is offline or chatting with other while transfering \"%s\"", userList[receiverId].username, f.filename);
         fprintf(stderr, "sendMsg = %s", sendMsg);
         if (send(sockfd, sendMsg, strlen(sendMsg), 0) == -1) {
@@ -288,27 +294,75 @@ void fileTransfer(char *params, int sockfd){
     else {
         // receiver is online >> do file transfer
         int nbyte_send;
+        int l = f.fileSize + 30;
+        sendMsg = (char*) malloc(PKT_BUFSIZE);
+        memset(sendMsg, 0, l);
         sprintf(sendMsg, "F 1 %s\n", buf);
         strcat(sendMsg, f.content);
-#if DEBUG == 1
         fprintf(stderr, "sendMsg = %s\n", sendMsg);
         fprintf(stderr, "receiverSockfd = %d\n", receiverSockfd);
-#endif
-        if ((nbyte_send = send(receiverSockfd, sendMsg, PKT_BUFSIZE, 0)) == -1) {
+        if ((nbyte_send = send(receiverSockfd, sendMsg, l, 0)) == -1) {
             ERR_EXIT("send");
         }
         free(sendMsg);
         fprintf(stderr, "nbyte_send = %d size = %d\n", nbyte_send, l);
     }
+    
+    /*
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    
+
+    FILE *fp;
+    if ( lstat(filename, &filestat) < 0){
+        exit(1);
+    }
+    fp = fopen(filename, "rb");//跟開啟檔案時不一樣，用b可能會有問題？
+    int fileSize = (int)filestat.st_size;
+    #if DEBUG == 1
+    //printf("The file size is %llu\n", (unsigned long long)filestat.st_size);
+    printf("The file size is %d\n", fileSize);
+    #endif
+    if(fp==NULL)
+        ERR_EXIT("open file:")
+    if (send(sockfd, &fileSize, sizeof(fileSize), 0) == -1) {
+        ERR_EXIT("Null file");
+    }
+
+    fcntl(sockfd, F_SETFL, flags|O_NONBLOCK);//non-blocking
+
+    int loopCount=1;
+    //read data from file and send it
+    while(1){
+        printf("%d loop,",loopCount);
+        numbytes = fread(buf, sizeof(char), sizeof(buf), fp);
+        printf("fread %d bytes, ", numbytes);
+        //if read successfully, send data
+        if (numbytes>0){
+            numbytes = send(sockfd, buf, numbytes,0);
+            //numbytes = write(sockfd, buf, numbytes);
+            printf("Sending %d bytes\n",numbytes);
+        }
+        if (numbytes<PKT_BUFSIZE){
+            if(feof(fp)){
+                fclose(fp);
+                printf("End of file\n");
+                printf("File transfer to sockfd %d completed.", sockfd);
+                fcntl(sockfd, F_SETFL, flags);//turn back to blocking mode
+            }
+            if(ferror(fp)){
+                printf("Error reading\n");
+            }
+            break;
+        }
+        loopCount++;
+    }
+    printf("%d loop,",loopCount);
+    */
     return;
 }
 
 int sendEntireFile(char *filepath, int sockfd) {
-#if DEBUG == 1
-    fprintf(stderr, "in sendEntireFile\n");
-    fprintf(stderr, "filepath: %s\n", filepath);
-#endif
-
+    fprintf(stderr, "filepath:%s\n", filepath);
     FILE *pFile = fopen( filepath, "rb");
     char *buffer;
     
@@ -338,10 +392,7 @@ int sendEntireFile(char *filepath, int sockfd) {
     // copy the file into the buffer:
     result = fread (buffer,1,lSize,pFile);
     if (result != lSize) {fputs ("Reading error",stderr); exit (3);}
-
-#if DEBUG == 1
-    fprintf(stderr, "read buffer = %s\n", buffer);
-#endif
+    printf("readEntireFile\n%s\n", buffer);
 
     if (send(sockfd, buffer, result, 0) == -1) {
         ERR_EXIT("send");
@@ -352,16 +403,14 @@ int sendEntireFile(char *filepath, int sockfd) {
     /* the whole file is now loaded in the memory buffer. */
 
     // terminate
+    //free (buffer);
     return (int)result;
 }
 
 void setReceiver(char *params, int sockfd){
-#if DEBUG == 1
-    fprintf(stderr, "in setReceiver\n");
-#endif
-    char receiverName[32];
+	char receiverName[32];
 
-    // set reciver info of sender in userlist
+    //set reciver info of sender in userlist
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
             sscanf(params, "%s", receiverName);
@@ -374,6 +423,7 @@ void setReceiver(char *params, int sockfd){
                     userList[i].receiverId = j;
                 }
             }
+        	//strcpy(userList[i].receiver,receiver);
             char filepath[20], sender[4], receiver[4];
             memset(filepath, 0, sizeof(filepath));
             strcpy(filepath, "./history/");
@@ -382,41 +432,32 @@ void setReceiver(char *params, int sockfd){
             strcat(filepath, "_");
             snprintf(receiver, sizeof(receiver), "%d", userList[i].receiverId);
             strcat(filepath, receiver);
-
-#if DEBUG == 1
+            #if DEBUG == 1
             fprintf(stderr, "history filepath:%s\n", filepath);
-#endif
+            #endif
 
             int ret = sendEntireFile(filepath, sockfd);     //send history
-
-#if DEBUG == 1
             fprintf(stderr, "ret=%d\n", ret);
-#endif
             if(ret != -1) {
                 FILE *fp = fopen( filepath, "r+");
+                char senderInHistory[4];
                 char msg[PKT_BUFSIZE];
                 char read[4];
                 int len = 0;
-                while(fscanf(fp, "%[^\n]", msg) == 1){
-                    len += strlen(msg)+1;
-#if DEBUG ==1
-                    fprintf(stderr, "%s %d\n", msg, len);
-#endif
-
-                    if (msg[strlen(msg)-1]=='0'){
-#if DEBUG == 1
+                while(fscanf(fp, "%s%s%s", sender, msg, read) == 3){
+                    len += strlen(sender)+strlen(msg)+2;
+                    if (strcmp(read,"0")==0){
                         fprintf(stderr, "change read!%d\n", len);
-#endif
-                        int res = fseek(fp, len-2, SEEK_SET);
+                        int res = fseek(fp, len, SEEK_SET);
                         strcpy(read,"1");
                         if(res < 0)
                         {
                             ERR_EXIT("fseek");
                         }
+                        printf("%s\n", read);
                         fprintf(fp, "%s", read);
                     }
-                    char c;
-                    fscanf(fp, "%c", &c);
+                    len += 2;
                 } 
                 fclose(fp);
             }
@@ -427,10 +468,7 @@ void setReceiver(char *params, int sockfd){
     return;
 }
 
-void setUsernameByFd(char *userName, int sockfd){
-#if DEBUG == 1
-    fprintf(stderr, "in setUsernameByFd\n");
-#endif
+void setUsernameByFd(char *userName, int sockfd){	
 	for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
         	strcpy(userName, userList[i].username);
@@ -440,25 +478,23 @@ void setUsernameByFd(char *userName, int sockfd){
 }
 
 int messaging(char *message, int sockfd){
-
 	int recvSockfd=-1;
     int senderId, receiverId;
 	
-#if DEBUG == 1
-    fprintf(stderr, "in messaging\n");
+    #if DEBUG == 1
     fprintf(stderr, "server receive message %s from socket %d\n", message, sockfd);
-#endif
+    #endif
     
-    // set senderId and receiverId by sockfd
+    
     for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
+        	//strcpy(sender, userList[i].username);
             senderId = i;
             receiverId = userList[i].receiverId;
         	break;
         }
     }
     
-    // find the hitory file
     char filepath1[20], filepath2[20], sender[4], receiver[4];
     memset(filepath1, 0, sizeof(filepath1));
     memset(filepath2, 0, sizeof(filepath2));
@@ -472,12 +508,13 @@ int messaging(char *message, int sockfd){
     strcat(filepath2, "_");
     strcat(filepath1, receiver);
     strcat(filepath2, sender);
-#if DEBUG == 1
+    #if DEBUG == 1
     fprintf(stderr, "history filepath1:%s\n", filepath1);
     fprintf(stderr, "history filepath2:%s\n", filepath2);
-#endif
+    #endif
 
     //find receiver sockfd
+    
     for (int i = 0; i < userCnt; i ++) {
         if (receiverId==userList[i].id) {
             recvSockfd=userList[i].fd;
@@ -485,14 +522,14 @@ int messaging(char *message, int sockfd){
         }
     }
     
-#if DEBUG == 1
+    #if DEBUG == 1
     fprintf(stderr, "recvSockfd: %d\n", recvSockfd);
-#endif
+    #endif
 
-    // write message to history file
+    
     FILE *fp1 = fopen( filepath1, "a");
     FILE *fp2 = fopen( filepath2, "a");
-    fprintf(fp1, "%d %s 1\n", senderId, message);           // 1 read(don't care)
+    fprintf(fp1, "%d %s 1\n", senderId, message);       // 1 read(don't care)
     
     if (recvSockfd != -1 && userList[receiverId].receiverId == senderId) {            // online
         fprintf(fp2, "%d %s 1\n", senderId, message);       // 1 read(online)
@@ -500,7 +537,6 @@ int messaging(char *message, int sockfd){
         memset(sendMsg, 0, sizeof(sendMsg));
         strcpy(sendMsg, "M ");
         strcat(sendMsg, message);
-        // if reciever is online and chat with sender, send the spot message to sockfd
         if (send(recvSockfd, sendMsg, sizeof(sendMsg)+1, 0) == -1) {
             ERR_EXIT("send");
         }
@@ -513,15 +549,12 @@ int messaging(char *message, int sockfd){
 }
 
 int registration ( char *params, int sockfd ) {
-#if DEBUG == 1
-    fprintf(stderr, "in registration\n");
     printUser();
-#endif
     char newUsername[32];
     char newPassword[32];
     sscanf(params, "%s %s", newUsername, newPassword);
     int i, check = 0;
-    char returnMessage[PKT_BUFSIZE];
+    char returnMessage[512];
     memset(&returnMessage, 0, sizeof(returnMessage));
     for ( i = 0; i < userCnt; i ++) {
 
@@ -552,15 +585,15 @@ int registration ( char *params, int sockfd ) {
 }
 
 int userLogin( char *params, int sockfd ) {
-# if DEBUG == 1
-    fprintf(stderr, "in userLogin: %s\n", params);
+    # if DEBUG == 1
     printUser();
-# endif
+    fprintf(stderr, "in userLogin: %s\n", params);
+    # endif
     char newUsername[32];
     char newPassword[32];
     sscanf(params, "%s %s", newUsername, newPassword);
     int i, check = 0;
-    char returnMessage[PKT_BUFSIZE];
+    char returnMessage[512];
     memset(&returnMessage, 0, sizeof(returnMessage));
     for ( i = 0; i < userCnt; i ++) {
 
@@ -581,27 +614,69 @@ int userLogin( char *params, int sockfd ) {
     if (send(sockfd, returnMessage, sizeof(returnMessage), 0) == -1) {
         ERR_EXIT("send");
     }
-    return 1;//待改。目前不管有沒有登入成功，都會傳送檔案(?)
+    return 1;//待改。目前不管有沒有登入成功，都會傳送檔案
 }
 
 int logout(int sockfd) {
-#if DEBUG == 1
-    fprintf(stderr, "in logout\n");
-#endif
-    for (int i = 0; i < userCnt; i++) {
+    int i;
+    for ( i = 0; i < userCnt; i++) {
         if ( sockfd == userList[i].fd ) {
             userList[i].fd = -1;       // offline
             userList[i].receiverId = -1;
         }
     }
+    FD_CLR(sockfd, &master);
+    close(sockfd);
     return 0;
 }
 
 void printUser() {
-    fprintf(stderr, "in printUser\n");
-    for (int i= 0; i < userCnt; i++) {
+    int i;
+    fprintf(stderr, "userprint\n");
+    for ( i= 0; i < userCnt; i++) {
         fprintf(stderr, "%s %s %d\n", userList[i].username, userList[i].password, userList[i].fd);
     }
     return;
 }
+//http://titania.ctie.monash.edu.au/handling-files/find-file.c
+void findfile(char* pattern)
+{
+    DIR* dir;			/* pointer to the scanned directory. */
+    struct dirent* entry;	/* pointer to one directory entry.   */
+    char cwd[500];	/* current working directory.        */
+    struct stat dir_stat;       /* used by stat().                   */
 
+    /* first, save path of current working directory */
+    if (!getcwd(cwd, 500)) {
+	perror("getcwd:");
+	return;
+    }
+
+
+    /* open the directory for reading */
+    dir = opendir(".");
+    if (!dir) {
+	fprintf(stderr, "Cannot read directory '%s': ", cwd);
+	perror("");
+	return;
+    }
+
+    /* scan the directory, traversing each sub-directory, and */
+    /* matching the pattern for each file name.               */
+    while ((entry = readdir(dir))) {
+	/* check if the pattern matchs. */
+		if (entry->d_name && strstr(entry->d_name, pattern)) {
+	    	printf("%s/%s\n", cwd, entry->d_name);
+		}
+	    /* check if the given entry is a directory. */
+	    if (stat(entry->d_name, &dir_stat) == -1) {
+	    	perror("stat:");
+	    	continue;
+	    }
+		/* skip the "." and ".." entries, to avoid loops. */
+		if (strcmp(entry->d_name, ".") == 0)
+		    continue;
+		if (strcmp(entry->d_name, "..") == 0)
+		    continue;
+    }
+}
