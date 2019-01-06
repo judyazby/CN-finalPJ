@@ -2,7 +2,7 @@
 Computer Networks Final Project
 CNline server v0
 Create Date: 2018.12.22
-Update Date: 2019.01.05
+Update Date: 2019.01.06
 Reference: 
 
 */
@@ -63,6 +63,7 @@ int messaging(char *message, int sockfd);
 void setReceiver(char *params, int sockfd);
 void setUsernameByFd(char *userName, int sockfd);
 int sendEntireFile(char *filepath, int sockfd);
+int checkUnreadMsg(int sockfd);
 void printUser();       // for debug
 
 static void init_server(unsigned short port) {
@@ -213,12 +214,7 @@ int main(int argc, char *argv[]) {
                             }
                             break;
                             case 'C':{      //check new message
-                            	/*
-                            	fprintf(stdout,"Your unread messages from:\n");
-                            	char pattern[32];
-                            	setUsernameByFd(pattern, i);
-                            	findfile(pattern);
-                            	*/
+                            	ret = checkUnreadMsg(i);
                             }
                             break;
                             case 'M':{      // messaging
@@ -440,7 +436,6 @@ void setUsernameByFd(char *userName, int sockfd){
 }
 
 int messaging(char *message, int sockfd){
-
 	int recvSockfd=-1;
     int senderId, receiverId;
 	
@@ -511,6 +506,87 @@ int messaging(char *message, int sockfd){
     fclose(fp1);
     fclose(fp2);
 }
+
+int checkUnreadMsg ( int sockfd ) {
+#if DEBUG == 1
+    fprintf(stderr, "in checkUnreadMsg\n");
+#endif
+    int userId;
+    for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+            userId = i;
+            break;
+        }
+    }
+    int check = 0;
+    char unreadMsg[PKT_BUFSIZE];
+    memset(unreadMsg, 0, PKT_BUFSIZE);
+    for (int i = 0; i < userCnt; i ++) {
+        int unreadCnt = 0;
+        char filepath[20], sender[4], receiver[4];
+        memset(filepath, 0, sizeof(filepath));
+        strcpy(filepath, "./history/");
+        snprintf(sender, sizeof(sender), "%d", userId);
+        snprintf(receiver, sizeof(receiver), "%d", i);
+        strcat(filepath, sender);
+        strcat(filepath, "_");
+        strcat(filepath, receiver);
+        FILE *fp = fopen( filepath, "r+" );
+        if (fp == NULL) continue;
+        else{
+            char unreadFromSender[PKT_BUFSIZE];
+            memset(unreadFromSender, 0, PKT_BUFSIZE);
+            char msg[PKT_BUFSIZE];
+            memset(msg, 0, PKT_BUFSIZE);
+            char read[4];
+            int len = 0;
+            while(fscanf(fp, "%[^\n]", msg) == 1){
+                len += strlen(msg)+1;
+#if DEBUG ==1
+                fprintf(stderr, "%s\n", msg);
+#endif
+                if (msg[strlen(msg)-1]=='0'){
+                    unreadCnt ++;
+#if DEBUG == 1
+                        fprintf(stderr, "change read!%d\n", len);
+#endif
+                        int res = fseek(fp, len-2, SEEK_SET);
+                        strcpy(read,"1");
+                        if(res < 0)
+                        {
+                            ERR_EXIT("fseek");
+                        }
+                        fprintf(fp, "%s", read);
+                        msg[strlen(msg)-2] = '\0';
+                        //msg = &(msg[2]);
+                        strcat(unreadFromSender, "\t");
+                        strcat(unreadFromSender, &(msg[2]));
+                        strcat(unreadFromSender, "\n");
+                }
+                char c;
+                fscanf(fp, "%c", &c);
+            } 
+            fclose(fp);
+            if (unreadCnt > 0) {
+                check = 1;
+                char senderInfo[1024];
+                memset(senderInfo, 0, 1024);
+                sprintf(senderInfo, "* %d unread messages from < %s >\n", unreadCnt, userList[i].username);
+                strcat(unreadMsg, senderInfo);
+                strcat(unreadMsg, unreadFromSender);
+            }
+        }
+    }
+    if(!check) {
+        // no unread msg
+        sprintf(unreadMsg, "There is no unread message.\n");
+    }
+    if (send(sockfd, unreadMsg, strlen(unreadMsg)+1, 0) == -1) {
+        ERR_EXIT("send");
+    }
+    return 0;
+}
+
 
 int registration ( char *params, int sockfd ) {
 #if DEBUG == 1

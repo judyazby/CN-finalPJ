@@ -2,7 +2,7 @@
 Computer Networks Final Project
 CNline server v0
 Create Date: 2018.12.22
-Update Date: 2019.01.05
+Update Date: 2019.01.06
 Reference: 
 
 */
@@ -63,6 +63,7 @@ int messaging(char *message, int sockfd);
 void setReceiver(char *params, int sockfd);
 void setUsernameByFd(char *userName, int sockfd);
 int sendEntireFile(char *filepath, int sockfd);
+int checkUnreadMsg(int sockfd);
 void printUser();       // for debug
 
 static void init_server(unsigned short port) {
@@ -146,15 +147,15 @@ int main(int argc, char *argv[]) {
             if (FD_ISSET(i, &readfds)) {
                 if (i==svr.listen_fd) {
                     clilen = sizeof(cliaddr);
-    			    conn_fd = accept(svr.listen_fd, (struct sockaddr*)&cliaddr, (socklen_t*)&clilen);
-    			    if (conn_fd < 0) {
-       				    if (errno == EINTR || errno == EAGAIN) continue;  // try again
-            			if (errno == ENFILE) {
-                		    (void) fprintf(stderr, "out of file descriptor table ... (maxconn %d)\n", maxfd);
-                		    continue;
-            		    }
-            			ERR_EXIT("accept")
-        			}
+                    conn_fd = accept(svr.listen_fd, (struct sockaddr*)&cliaddr, (socklen_t*)&clilen);
+                    if (conn_fd < 0) {
+                        if (errno == EINTR || errno == EAGAIN) continue;  // try again
+                        if (errno == ENFILE) {
+                            (void) fprintf(stderr, "out of file descriptor table ... (maxconn %d)\n", maxfd);
+                            continue;
+                        }
+                        ERR_EXIT("accept")
+                    }
                     else {
                         FD_SET(conn_fd, &master);
                         #if DEBUG == 1
@@ -205,7 +206,7 @@ int main(int argc, char *argv[]) {
                             }
                             break;
                             case 'S':{      // set receiver
-                            	setReceiver(params, i);                            	
+                                setReceiver(params, i);                             
                             }
                             break;
                             case 'F':{      // file transfer
@@ -213,16 +214,11 @@ int main(int argc, char *argv[]) {
                             }
                             break;
                             case 'C':{      //check new message
-                            	/*
-                            	fprintf(stdout,"Your unread messages from:\n");
-                            	char pattern[32];
-                            	setUsernameByFd(pattern, i);
-                            	findfile(pattern);
-                            	*/
+                                ret = checkUnreadMsg(i);
                             }
                             break;
                             case 'M':{      // messaging
-                            	ret = messaging(params, i);
+                                ret = messaging(params, i);
                             }
                             break;
                             case 'Q':{      // user logout
@@ -421,7 +417,7 @@ void setReceiver(char *params, int sockfd){
                 fclose(fp);
             }
             
-        	break;
+            break;
         }
     }
     return;
@@ -431,19 +427,18 @@ void setUsernameByFd(char *userName, int sockfd){
 #if DEBUG == 1
     fprintf(stderr, "in setUsernameByFd\n");
 #endif
-	for (int i = 0; i < userCnt; i ++) {
+    for (int i = 0; i < userCnt; i ++) {
         if (userList[i].fd == sockfd) {
-        	strcpy(userName, userList[i].username);
-        	break;
+            strcpy(userName, userList[i].username);
+            break;
         }
     }
 }
 
 int messaging(char *message, int sockfd){
-
-	int recvSockfd=-1;
+    int recvSockfd=-1;
     int senderId, receiverId;
-	
+    
 #if DEBUG == 1
     fprintf(stderr, "in messaging\n");
     fprintf(stderr, "server receive message %s from socket %d\n", message, sockfd);
@@ -454,7 +449,7 @@ int messaging(char *message, int sockfd){
         if (userList[i].fd == sockfd) {
             senderId = i;
             receiverId = userList[i].receiverId;
-        	break;
+            break;
         }
     }
     
@@ -511,6 +506,87 @@ int messaging(char *message, int sockfd){
     fclose(fp1);
     fclose(fp2);
 }
+
+int checkUnreadMsg ( int sockfd ) {
+#if DEBUG == 1
+    fprintf(stderr, "in checkUnreadMsg\n");
+#endif
+    int userId;
+    for (int i = 0; i < userCnt; i ++) {
+        if (userList[i].fd == sockfd) {
+            userId = i;
+            break;
+        }
+    }
+    int check = 0;
+    char unreadMsg[PKT_BUFSIZE];
+    memset(unreadMsg, 0, PKT_BUFSIZE);
+    for (int i = 0; i < userCnt; i ++) {
+        int unreadCnt = 0;
+        char filepath[20], sender[4], receiver[4];
+        memset(filepath, 0, sizeof(filepath));
+        strcpy(filepath, "./history/");
+        snprintf(sender, sizeof(sender), "%d", userId);
+        snprintf(receiver, sizeof(receiver), "%d", i);
+        strcat(filepath, sender);
+        strcat(filepath, "_");
+        strcat(filepath, receiver);
+        FILE *fp = fopen( filepath, "r+" );
+        if (fp == NULL) continue;
+        else{
+            char unreadFromSender[PKT_BUFSIZE];
+            memset(unreadFromSender, 0, PKT_BUFSIZE);
+            char msg[PKT_BUFSIZE];
+            memset(msg, 0, PKT_BUFSIZE);
+            char read[4];
+            int len = 0;
+            while(fscanf(fp, "%[^\n]", msg) == 1){
+                len += strlen(msg)+1;
+#if DEBUG ==1
+                fprintf(stderr, "%s\n", msg);
+#endif
+                if (msg[strlen(msg)-1]=='0'){
+                    unreadCnt ++;
+#if DEBUG == 1
+                        fprintf(stderr, "change read!%d\n", len);
+#endif
+                        int res = fseek(fp, len-2, SEEK_SET);
+                        strcpy(read,"1");
+                        if(res < 0)
+                        {
+                            ERR_EXIT("fseek");
+                        }
+                        fprintf(fp, "%s", read);
+                        msg[strlen(msg)-2] = '\0';
+                        //msg = &(msg[2]);
+                        strcat(unreadFromSender, "\t");
+                        strcat(unreadFromSender, &(msg[2]));
+                        strcat(unreadFromSender, "\n");
+                }
+                char c;
+                fscanf(fp, "%c", &c);
+            } 
+            fclose(fp);
+            if (unreadCnt > 0) {
+                check = 1;
+                char senderInfo[1024];
+                memset(senderInfo, 0, 1024);
+                sprintf(senderInfo, "* %d unread messages from < %s >\n", unreadCnt, userList[i].username);
+                strcat(unreadMsg, senderInfo);
+                strcat(unreadMsg, unreadFromSender);
+            }
+        }
+    }
+    if(!check) {
+        // no unread msg
+        sprintf(unreadMsg, "There is no unread message.\n");
+    }
+    if (send(sockfd, unreadMsg, strlen(unreadMsg)+1, 0) == -1) {
+        ERR_EXIT("send");
+    }
+    return 0;
+}
+
 
 int registration ( char *params, int sockfd ) {
 #if DEBUG == 1
@@ -581,7 +657,7 @@ int userLogin( char *params, int sockfd ) {
     if (send(sockfd, returnMessage, sizeof(returnMessage), 0) == -1) {
         ERR_EXIT("send");
     }
-    return 1;//待改。目前不管有沒有登入成功，都會傳送檔案(?)
+    return 1;
 }
 
 int logout(int sockfd) {

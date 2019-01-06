@@ -2,7 +2,7 @@
 Computer Networks Final Project
 CNline client v0
 Create Date: 2018.12.22
-Update Date: 2019.01.05
+Update Date: 2019.01.06
 Reference: 
 */
 
@@ -190,13 +190,17 @@ int chooseToDo(char *sender, char *receiver, int sockfd, char *history){
         while(sscanf(history, "%[^\n]", buf) >= 0){
             history = &(history[strlen(buf)+1]);
             sscanf(buf, "%d", &senderId);
+            int l = strlen(buf);
             if (senderId == sendUser.id) {
                 printf("< %s >:", sendUser.username);
             }
             else {
-                printf("< %s >:", recvUser.username);
+                if (buf[l-1]=='0') {
+                    printf("< %s >:*", recvUser.username);
+                } else {
+                    printf("< %s >:", recvUser.username);
+                }
             }
-            int l = strlen(buf);
             buf[l-2]='\0';
             printf("\t%s\n", &(buf[2]));
             //memset(msg, 0, sizeof(msg));
@@ -419,47 +423,6 @@ void recvEntireFile(char *params) {
     return;
 }
 
-/*
-int fileReceive(char *filename, int sockfd){
-    int fileSize, numbytes;
-    char buf[PKT_BUFSIZE];
-    //receive filesize as the halt condition of non-blocking recv 
-    FILE *fp;
-    if((recv(sockfd, &fileSize, sizeof(int), 0))<=0) {
-        fprintf(stderr, "file size 0\n");
-    }
-    #if DEBUG == 1
-    printf("Size of the receive file=%d\n",fileSize);
-    #endif
-    
-    //Open file
-    if ( (fp = fopen(filename, "wb")) == NULL){
-        ERR_EXIT("fopen")
-    }
-    int loopCount=1;
-    int totalBytesRecv=0;
-    //Receive file from server
-    while(totalBytesRecv<fileSize){
-        //numbytes = read(sockfd, buf, sizeof(buf));
-        //set recv non-blocking
-        numbytes =recv(sockfd, buf, sizeof(buf),MSG_DONTWAIT);
-        if(numbytes > 0){
-            numbytes = fwrite(buf, sizeof(char), numbytes, fp);
-            totalBytesRecv += numbytes;
-            #if DEBUG == 1
-            printf("At loop %d, fwrite %d bytes\n", loopCount, numbytes);
-            #endif
-        }     
-        loopCount++;
-    }
-    printf("After %d loops, receive %d bytes from sockfd %d\n.", 
-        loopCount, totalBytesRecv, sockfd);
-    fclose(fp);
-    
-    return 1;
-}
-*/
-
 void userChooseTarget(char *userListFile, char *receiver, int sockfd){
 #if DEBUG == 1
     fprintf(stderr, "in userChooseTarget\n");
@@ -509,9 +472,22 @@ void userReadOrSend(char *username, int sockfd){    //return when log out
         fprintf(stdout, "What do you want to do?\n> Check new message(C)\n> Send new message(S)\n> Logout(Q)\n");
         fscanf(stdin, "%c", &c);
         if ( c == 'C' || c == 'c') {
-            fprintf(stdout,"Your unread messages from:\n");
-            //findfile(username);
-
+            int nbytes_send, nbytes_recv;
+            char message[4];
+            message[0] = toupper(c);
+            strcat(message, "\0");
+            if ((nbytes_send = send(sockfd, message, strlen(message)+1 , 0)) == -1) {
+                ERR_EXIT("send")
+            }
+            char receiveMessage[PKT_BUFSIZE];
+            memset(receiveMessage, 0, PKT_BUFSIZE);
+            if((nbytes_recv = recv(sockfd, receiveMessage, sizeof(receiveMessage), 0))<0) {
+                fprintf(stderr, "recv error\n");
+            }
+            int len = strlen(receiveMessage);
+            fprintf(stdout, "==================================================\n");
+            write(1, receiveMessage, len);
+            fprintf(stdout, "==================================================\n");
             continue;//還沒做
         } else if ( c == 'S' || c == 's'){
             char message[PKT_BUFSIZE];
