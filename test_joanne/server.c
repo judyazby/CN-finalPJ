@@ -558,9 +558,11 @@ int checkUnreadMsg ( int sockfd ) {
                         }
                         fprintf(fp, "%s", read);
                         msg[strlen(msg)-2] = '\0';
+                        char senderInMsg[4];
+                        sscanf(msg, "%s", senderInMsg);
                         //msg = &(msg[2]);
                         strcat(unreadFromSender, "\t");
-                        strcat(unreadFromSender, &(msg[2]));
+                        strcat(unreadFromSender, &(msg[strlen(senderInMsg)+1]));
                         strcat(unreadFromSender, "\n");
                 }
                 char c;
